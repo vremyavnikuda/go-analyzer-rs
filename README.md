@@ -1,28 +1,30 @@
 # Go Analyzer RS
 
-Анализатор Go кода на Rust с поддержкой VS Code, который показывает жизненный цикл переменных и предупреждает о потенциальных data race.
+[README_RU](README_RU.md)
 
-## Возможности
+A Go code analyzer written in Rust with VS Code support that shows variable lifecycles and warns about potential data races.
 
-- **Анализ жизненного цикла переменных**: При выборе переменной в любом месте кода показывается весь её жизненный цикл
-- **Автоматический анализ в реальном времени**: Анализ запускается автоматически при перемещении курсора
-- **Определение указателей**: Автоматически определяет использование указателей
-- **Обнаружение data race**: Предупреждает о потенциальных data race в горутинах
-- **Цветовая индикация**:
-  - 🟢 **Зеленый**: Объявление переменной
-  - 🟡 **Желтый**: Обычное использование переменной
-  - 🔵 **Синий**: Использование указателя
-  - 🔴 **Красный**: Потенциальный data race в горутине
+## Features
 
-## Установка
+- **Variable lifecycle analysis**: When selecting a variable anywhere in the code, shows its complete lifecycle
+- **Real-time automatic analysis**: Analysis runs automatically when moving the cursor
+- **Pointer detection**: Automatically detects pointer usage
+- **Data race detection**: Warns about potential data races in goroutines
+- **Color-coded visualization**:
+  - 🟢 **Green**: Variable declaration
+  - 🟡 **Yellow**: Regular variable usage
+  - 🔵 **Blue**: Pointer usage
+  - 🔴 **Red**: Potential data race in goroutine
 
-### Сборка сервера
+## Installation
+
+### Building the server
 
 ```bash
 cargo build --release
 ```
 
-### Сборка VS Code расширения
+### Building the VS Code extension
 
 ```bash
 cd vscode
@@ -30,69 +32,131 @@ npm install
 npm run compile
 ```
 
-## Использование
+## Usage
 
-### Автоматический анализ (по умолчанию)
-1. Откройте Go файл в VS Code
-2. Установите расширение (если еще не установлено)
-3. Просто перемещайте курсор по переменным - анализ запустится автоматически
-4. Увидите цветовую индикацию всего жизненного цикла переменной
+### Automatic analysis (default)
+1. Open a Go file in VS Code
+2. Install the extension (if not already installed)
+3. Simply move the cursor over variables - analysis will start automatically
+4. See color-coded visualization of the complete variable lifecycle
 
-### Ручной анализ
-1. Выберите переменную в коде
-2. Выполните команду `Go Analyzer: Show Lifecycle` (Ctrl+Shift+P → "Go Analyzer: Show Lifecycle")
+### Manual analysis
+1. Select a variable in the code
+2. Execute the command `Go Analyzer: Show Lifecycle` (Ctrl+Shift+P → "Go Analyzer: Show Lifecycle")
 
-## Настройки
+## Configuration
 
-В настройках VS Code можно настроить:
+In VS Code settings, you can configure:
 
-- `goAnalyzer.enableAutoAnalysis` - включить/выключить автоматический анализ (по умолчанию: true)
-- `goAnalyzer.autoAnalysisDelay` - задержка перед автоматическим анализом в миллисекундах (по умолчанию: 300)
-- `goAnalyzer.declarationColor` - цвет объявлений переменных (по умолчанию: "green")
-- `goAnalyzer.useColor` - цвет использования переменных (по умолчанию: "yellow")
-- `goAnalyzer.pointerColor` - цвет операций с указателями (по умолчанию: "blue")
-- `goAnalyzer.raceColor` - цвет предупреждений о data race (по умолчанию: "red")
+- `goAnalyzer.enableAutoAnalysis` - enable/disable automatic analysis (default: true)
+- `goAnalyzer.autoAnalysisDelay` - delay before automatic analysis in milliseconds (default: 300)
+- `goAnalyzer.declarationColor` - color for variable declarations (default: "green")
+- `goAnalyzer.useColor` - color for variable usage (default: "yellow")
+- `goAnalyzer.pointerColor` - color for pointer operations (default: "blue")
+- `goAnalyzer.raceColor` - color for data race warnings (default: "red")
 
-## Пример
+## Example
 
 ```go
 func main() {
-    x := 42          // 🟢 Объявление
-    println(x)       // 🟡 Использование
-    ptr := &x        // 🟡 Использование x, 🟢 Объявление ptr
-    println(*ptr)    // 🔵 Использование указателя
+    x := 42          // 🟢 Declaration
+    println(x)       // 🟡 Usage
+    ptr := &x        // 🟡 Usage of x, 🟢 Declaration of ptr
+    println(*ptr)    // 🔵 Pointer usage
     go func() {
         println(x)   // 🔴 Data race!
     }()
 }
 ```
 
-## Технические детали
+## Technical Details
 
-- **Сервер**: Rust с использованием tree-sitter для парсинга Go
-- **Клиент**: TypeScript расширение для VS Code
-- **Протокол**: Language Server Protocol (LSP)
-- **Производительность**: Автоматический анализ с задержкой для избежания частых запросов
+- **Server**: Rust using tree-sitter for Go parsing
+- **Client**: TypeScript extension for VS Code
+- **Protocol**: Language Server Protocol (LSP)
+- **Performance**: Automatic analysis with delay to avoid frequent requests
 
-## Разработка
+## Development
 
-### Структура проекта
+### Project Structure
 
 ```
 go-analyzer-rs/
 ├── src/
-│   └── main.rs          # Rust LSP сервер
+│   └── main.rs          # Rust LSP server
 ├── vscode/
 │   └── src/
-│       └── extension.ts # VS Code расширение
+│       └── extension.ts # VS Code extension
 ├── go_test/
-│   └── main.go          # Тестовый Go файл
+│   └── main.go          # Test Go file
 └── Cargo.toml
 ```
 
-### Запуск в режиме разработки
+### Running in Development Mode
 
-1. Соберите сервер: `cargo build`
-2. Соберите расширение: `cd vscode && npm run compile`
-3. Запустите VS Code в режиме отладки (F5)
-4. Откройте тестовый Go файл и протестируйте функциональность 
+1. Build the server: `cargo build`
+2. Build the extension: `cd vscode && npm run compile`
+3. Launch VS Code in debug mode (F5)
+4. Open the test Go file and test the functionality
+
+## How It Works
+
+### Variable Lifecycle Analysis
+The analyzer uses tree-sitter to parse Go code and build an Abstract Syntax Tree (AST). When a variable is selected (either in declaration or usage), the system:
+
+1. **Finds the variable declaration** in the current scope
+2. **Collects all usages** throughout the function
+3. **Detects pointer operations** (address-of `&`, dereference `*`)
+4. **Identifies goroutine usage** for data race detection
+5. **Applies color-coded decorations** to visualize the lifecycle
+
+### Real-time Analysis
+- **Cursor tracking**: Monitors cursor position changes in Go files
+- **Debounced requests**: Uses configurable delay to prevent excessive server requests
+- **Smart updates**: Only analyzes when cursor position actually changes
+- **Resource management**: Properly cleans up decorations and timeouts
+
+### Data Race Detection
+The analyzer detects potential data races by:
+1. **Identifying goroutines**: Finding `go` statements in the code
+2. **Variable usage in goroutines**: Checking if variables are used inside goroutines
+3. **Scope analysis**: Determining if variables are shared between goroutines
+4. **Visual warnings**: Marking such usages with red color
+
+## Performance Considerations
+
+- **Efficient parsing**: Uses tree-sitter for fast, incremental parsing
+- **Debounced analysis**: Configurable delay prevents excessive CPU usage
+- **Smart caching**: Reuses parsed AST when possible
+- **Resource cleanup**: Proper disposal of decorations and event listeners
+
+## Troubleshooting
+
+### Common Issues
+
+1. **No decorations appear**:
+   - Check if the file has `.go` extension
+   - Ensure the LSP server is running
+   - Check VS Code console for errors
+
+2. **Slow performance**:
+   - Increase `autoAnalysisDelay` in settings
+   - Disable automatic analysis if not needed
+   - Check for large files or complex code
+
+3. **Incorrect analysis**:
+   - Ensure Go syntax is correct
+   - Check for parsing errors in the console
+   - Verify tree-sitter grammar compatibility
+
+## Contributing
+
+1. Fork the repository
+2. Create a feature branch
+3. Make your changes
+4. Add tests if applicable
+5. Submit a pull request
+
+## License
+
+This project is licensed under the MIT License - see the LICENSE file for details. 

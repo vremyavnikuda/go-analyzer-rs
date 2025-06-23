@@ -1,10 +1,10 @@
 {
   "name": "go-analyzer",
   "displayName": "Go Analyzer",
-  "description": "Visualizes variable scope and usage in Go",
+  "description": "Go code analyzer with variable lifecycle tracking",
   "version": "0.0.1",
   "engines": {
-    "vscode": "^1.80.0"
+    "vscode": "^1.60.0"
   },
   "categories": [
     "Programming Languages"
@@ -21,31 +21,41 @@
     "commands": [
       {
         "command": "goanalyzer.showLifecycle",
-        "title": "Go Analyzer: Show Variable Lifecycle"
+        "title": "Go Analyzer: Show Lifecycle"
       }
     ],
     "configuration": {
       "title": "Go Analyzer",
       "properties": {
+        "goAnalyzer.enableAutoAnalysis": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable automatic variable analysis on cursor movement"
+        },
+        "goAnalyzer.autoAnalysisDelay": {
+          "type": "number",
+          "default": 300,
+          "description": "Delay in milliseconds before auto-analysis triggers"
+        },
         "goAnalyzer.declarationColor": {
           "type": "string",
           "default": "green",
-          "description": "Color for variable declaration decorations"
+          "description": "Color for variable declarations"
         },
         "goAnalyzer.useColor": {
           "type": "string",
           "default": "yellow",
-          "description": "Color for variable use decorations"
+          "description": "Color for variable uses"
         },
         "goAnalyzer.pointerColor": {
           "type": "string",
           "default": "blue",
-          "description": "Color for pointer usage decorations"
+          "description": "Color for pointer operations"
         },
         "goAnalyzer.raceColor": {
           "type": "string",
           "default": "red",
-          "description": "Color for potential data race decorations"
+          "description": "Color for potential data race warnings"
         }
       }
     }
@@ -56,11 +66,11 @@
     "watch": "tsc -watch -p ./"
   },
   "dependencies": {
-    "vscode-languageclient": "^9.0.1"
+    "vscode-languageclient": "^8.0.0"
   },
   "devDependencies": {
-    "@types/vscode": "^1.80.0",
-    "@types/node": "^18.0.0",
-    "typescript": "^5.0.0"
+    "@types/vscode": "^1.60.0",
+    "@types/node": "14.x",
+    "typescript": "^4.3.2"
   }
 }

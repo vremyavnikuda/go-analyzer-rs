@@ -143,6 +143,100 @@ export function activate(context: vscode.ExtensionContext) {
         }
     );
 
+    // Автоматический анализ при изменении позиции курсора
+    let cursorChangeDisposable: vscode.Disposable | undefined;
+    let lastPosition: vscode.Position | undefined;
+    let analysisTimeout: NodeJS.Timeout | undefined;
+
+    const startCursorTracking = () => {
+        if (cursorChangeDisposable) {
+            cursorChangeDisposable.dispose();
+        }
+
+        cursorChangeDisposable = vscode.window.onDidChangeTextEditorSelection(async (event) => {
+            const editor = event.textEditor;
+            if (editor.document.languageId !== 'go') {
+                return;
+            }
+
+            // Проверяем, включен ли автоматический анализ
+            const enableAutoAnalysis = vscode.workspace.getConfiguration("goAnalyzer").get("enableAutoAnalysis", true);
+            if (!enableAutoAnalysis) {
+                return;
+            }
+
+            const position = editor.selection.active;
+
+            // Проверяем, изменилась ли позиция курсора
+            if (lastPosition &&
+                lastPosition.line === position.line &&
+                lastPosition.character === position.character) {
+                return;
+            }
+
+            lastPosition = position;
+
+            // Очищаем предыдущий таймаут
+            if (analysisTimeout) {
+                clearTimeout(analysisTimeout);
+            }
+
+            // Получаем задержку из настроек
+            const delay = vscode.workspace.getConfiguration("goAnalyzer").get("autoAnalysisDelay", 300);
+
+            // Запускаем анализ с небольшой задержкой для избежания частых запросов
+            analysisTimeout = setTimeout(async () => {
+                try {
+                    const response: Decoration[] = await client.sendRequest(
+                        "workspace/executeCommand",
+                        {
+                            command: "goanalyzer/cursor",
+                            arguments: [{ textDocument: { uri: editor.document.uri.toString() }, position }],
+                        }
+                    );
+
+                    // Очищаем предыдущие декорации
+                    for (const key in decorationTypes) {
+                        editor.setDecorations(decorationTypes[key as keyof typeof decorationTypes], []);
+                    }
+
+                    if (response && Array.isArray(response)) {
+                        const decorationsByType: { [key: string]: { range: vscode.Range; hoverMessage: string }[] } = {
+                            Declaration: [],
+                            Use: [],
+                            Pointer: [],
+                            Race: [],
+                        };
+
+                        for (const deco of response) {
+                            const range = new vscode.Range(
+                                new vscode.Position(deco.range.start.line, deco.range.start.character),
+                                new vscode.Position(deco.range.end.line, deco.range.end.character)
+                            );
+                            decorationsByType[deco.kind].push({ range, hoverMessage: deco.hoverMessage });
+                        }
+
+                        for (const [kind, decorations] of Object.entries(decorationsByType)) {
+                            editor.setDecorations(decorationTypes[kind as keyof typeof decorationTypes], decorations);
+                        }
+                    }
+                } catch (error) {
+                    console.error("Auto-analysis error:", error);
+                }
+            }, delay);
+        });
+    };
+
+    // Запускаем отслеживание курсора при активации расширения
+    startCursorTracking();
+
+    // Перезапускаем отслеживание при смене активного редактора
+    const editorChangeDisposable = vscode.window.onDidChangeActiveTextEditor((editor) => {
+        if (editor && editor.document.languageId === 'go') {
+            startCursorTracking();
+        }
+    });
+
     vscode.languages.registerHoverProvider("go", {
         async provideHover(document: vscode.TextDocument, position: vscode.Position, token: vscode.CancellationToken) {
             try {
@@ -176,6 +270,19 @@ export function activate(context: vscode.ExtensionContext) {
     });
 
     context.subscriptions.push(disposable);
+    context.subscriptions.push(editorChangeDisposable);
+
+    // Очистка ресурсов при деактивации
+    context.subscriptions.push({
+        dispose: () => {
+            if (cursorChangeDisposable) {
+                cursorChangeDisposable.dispose();
+            }
+            if (analysisTimeout) {
+                clearTimeout(analysisTimeout);
+            }
+        }
+    });
 }
 
 export function deactivate(): Promise<void> | undefined {

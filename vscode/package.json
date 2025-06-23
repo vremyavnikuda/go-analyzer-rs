@@ -1,0 +1,66 @@
+{
+  "name": "go-analyzer",
+  "displayName": "Go Analyzer",
+  "description": "Visualizes variable scope and usage in Go",
+  "version": "0.0.1",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "activationEvents": [
+    "onLanguage:go"
+  ],
+  "main": "./out/extension.js",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/vremyavnikuda/go-analyzer-rs.git"
+  },
+  "contributes": {
+    "commands": [
+      {
+        "command": "goanalyzer.showLifecycle",
+        "title": "Go Analyzer: Show Variable Lifecycle"
+      }
+    ],
+    "configuration": {
+      "title": "Go Analyzer",
+      "properties": {
+        "goAnalyzer.declarationColor": {
+          "type": "string",
+          "default": "green",
+          "description": "Color for variable declaration decorations"
+        },
+        "goAnalyzer.useColor": {
+          "type": "string",
+          "default": "yellow",
+          "description": "Color for variable use decorations"
+        },
+        "goAnalyzer.pointerColor": {
+          "type": "string",
+          "default": "blue",
+          "description": "Color for pointer usage decorations"
+        },
+        "goAnalyzer.raceColor": {
+          "type": "string",
+          "default": "red",
+          "description": "Color for potential data race decorations"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.80.0",
+    "@types/node": "^18.0.0",
+    "typescript": "^5.0.0"
+  }
+}

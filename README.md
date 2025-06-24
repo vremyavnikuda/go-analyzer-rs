@@ -18,18 +18,64 @@ A Go code analyzer written in Rust with VS Code support that shows variable life
 
 ## Installation
 
-### Building the server
+### Quick Start (Recommended)
+
+Use the provided Makefile for easy building and packaging:
+
+```bash
+# Build everything and package the extension
+make all
+
+# Or step by step:
+make clean    # Clean previous builds
+make build    # Build Rust server
+make copy     # Copy server to extension folder
+make npm      # Install Node.js dependencies
+make compile  # Compile TypeScript extension
+make package  # Package VS Code extension
+```
+
+### Manual Installation
+
+#### Building the server
 
 ```bash
 cargo build --release
 ```
 
-### Building the VS Code extension
+#### Building the VS Code extension
 
 ```bash
 cd vscode
 npm install
 npm run compile
+```
+
+#### Copying server binary
+
+After building the Rust server, copy the binary to the extension folder:
+
+```bash
+# Create server directory if it doesn't exist
+mkdir -p vscode/server
+
+# Copy the binary (Windows)
+copy target\release\go-analyzer-rs.exe vscode\server\
+
+# Copy the binary (Linux/macOS)
+cp target/release/go-analyzer-rs vscode/server/
+```
+
+### Development Build
+
+For development, you can use:
+
+```bash
+# Build in debug mode
+cargo build
+
+# Build extension in watch mode
+cd vscode && npm run watch
 ```
 
 ## Usage
@@ -94,10 +140,27 @@ go-analyzer-rs/
 
 ### Running in Development Mode
 
+#### Using Makefile (Recommended)
+
+```bash
+# Full development build
+make rebuild
+
+# Or step by step:
+make clean
+make build
+make copy
+make npm
+make compile
+```
+
+#### Manual Development Setup
+
 1. Build the server: `cargo build`
-2. Build the extension: `cd vscode && npm run compile`
-3. Launch VS Code in debug mode (F5)
-4. Open the test Go file and test the functionality
+2. Copy the binary: `copy target\debug\go-analyzer-rs.exe vscode\server\` (Windows) or `cp target/debug/go-analyzer-rs vscode/server/` (Linux/macOS)
+3. Build the extension: `cd vscode && npm run compile`
+4. Launch VS Code in debug mode (F5)
+5. Open the test Go file and test the functionality
 
 ## How It Works
 

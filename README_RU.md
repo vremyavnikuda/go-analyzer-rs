@@ -16,18 +16,64 @@
 
 ## Установка
 
-### Сборка сервера
+### Быстрый старт (Рекомендуется)
+
+Используйте предоставленный Makefile для простой сборки и упаковки:
+
+```bash
+# Собрать всё и упаковать расширение
+make all
+
+# Или пошагово:
+make clean    # Очистить предыдущие сборки
+make build    # Собрать Rust сервер
+make copy     # Скопировать сервер в папку расширения
+make npm      # Установить Node.js зависимости
+make compile  # Скомпилировать TypeScript расширение
+make package  # Упаковать VS Code расширение
+```
+
+### Ручная установка
+
+#### Сборка сервера
 
 ```bash
 cargo build --release
 ```
 
-### Сборка VS Code расширения
+#### Сборка VS Code расширения
 
 ```bash
 cd vscode
 npm install
 npm run compile
+```
+
+#### Копирование бинарника сервера
+
+После сборки Rust сервера скопируйте бинарник в папку расширения:
+
+```bash
+# Создать папку server если её нет
+mkdir -p vscode/server
+
+# Скопировать бинарник (Windows)
+copy target\release\go-analyzer-rs.exe vscode\server\
+
+# Скопировать бинарник (Linux/macOS)
+cp target/release/go-analyzer-rs vscode/server/
+```
+
+### Сборка для разработки
+
+Для разработки можно использовать:
+
+```bash
+# Собрать в режиме отладки
+cargo build
+
+# Собрать расширение в режиме наблюдения
+cd vscode && npm run watch
 ```
 
 ## Использование
@@ -92,7 +138,24 @@ go-analyzer-rs/
 
 ### Запуск в режиме разработки
 
+#### Использование Makefile (Рекомендуется)
+
+```bash
+# Полная сборка для разработки
+make rebuild
+
+# Или пошагово:
+make clean
+make build
+make copy
+make npm
+make compile
+```
+
+#### Ручная настройка для разработки
+
 1. Соберите сервер: `cargo build`
-2. Соберите расширение: `cd vscode && npm run compile`
-3. Запустите VS Code в режиме отладки (F5)
-4. Откройте тестовый Go файл и протестируйте функциональность 
+2. Скопируйте бинарник: `copy target\debug\go-analyzer-rs.exe vscode\server\` (Windows) или `cp target/debug/go-analyzer-rs vscode/server/` (Linux/macOS)
+3. Соберите расширение: `cd vscode && npm run compile`
+4. Запустите VS Code в режиме отладки (F5)
+5. Откройте тестовый Go файл и протестируйте функциональность 

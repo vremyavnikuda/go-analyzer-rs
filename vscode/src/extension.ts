@@ -11,6 +11,8 @@ import * as path from "path";
 import * as fs from "fs";
 
 let client: LanguageClient;
+//FIXME: переписать статус бар
+let statusBarItem: vscode.StatusBarItem;
 
 interface Decoration {
     range: vscode.Range;
@@ -19,6 +21,7 @@ interface Decoration {
 }
 
 const ProgressNotification = new NotificationType<{ message: string }>("goanalyzer/progress");
+const IndexingStatusNotification = new NotificationType<{ variables: number, functions: number, channels: number, goroutines: number }>("goanalyzer/indexingStatus");
 
 export function activate(context: vscode.ExtensionContext) {
     const serverModule = process.env.GO_ANALYZER_PATH || path.resolve(context.extensionPath, "server", "go-analyzer-rs.exe");
@@ -48,6 +51,20 @@ export function activate(context: vscode.ExtensionContext) {
         serverOptions,
         clientOptions
     );
+
+    // REVIEW: Статус бар слишком большой ,информация не должна занимать столько много места
+    // REF: https://code.visualstudio.com/api/references/vscode-api#StatusBarItem
+    // REF: переписать статус бар по принципу rust-analyzer
+    // --- Status Bar ---
+    statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
+    statusBarItem.text = "Go Analyzer: Индексирование...";
+    statusBarItem.show();
+    context.subscriptions.push(statusBarItem);
+
+    // FIXME: переписать статус бар
+    client.onNotification(IndexingStatusNotification, (params) => {
+        statusBarItem.text = `Go: Переменные: ${params.variables} | Функции: ${params.functions} | Каналы: ${params.channels} | Горутины: ${params.goroutines}`;
+    });
 
     const decorationTypes = {
         Declaration: vscode.window.createTextEditorDecorationType({

@@ -11,8 +11,13 @@ import * as path from "path";
 import * as fs from "fs";
 
 let client: LanguageClient;
-//FIXME: переписать статус бар
-let statusBarItem: vscode.StatusBarItem;
+
+let lastStatus = {
+    variables: 0,
+    functions: 0,
+    channels: 0,
+    goroutines: 0
+};
 
 interface Decoration {
     range: vscode.Range;
@@ -52,18 +57,30 @@ export function activate(context: vscode.ExtensionContext) {
         clientOptions
     );
 
-    // REVIEW: Статус бар слишком большой ,информация не должна занимать столько много места
-    // REF: https://code.visualstudio.com/api/references/vscode-api#StatusBarItem
-    // REF: переписать статус бар по принципу rust-analyzer
-    // --- Status Bar ---
-    statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
-    statusBarItem.text = "Go Analyzer: Индексирование...";
+    // REVIEW: проверить работоспособность нового статус бара 
+    const statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
+    statusBarItem.text = "Go Analyzer";
+    const updateTooltip = () => {
+        const details = [
+            `Переменные: ${lastStatus.variables}`,
+            `Функции: ${lastStatus.functions}`,
+            `Каналы: ${lastStatus.channels}`,
+            `Горутины: ${lastStatus.goroutines}`
+        ];
+        statusBarItem.tooltip = details.join("\n");
+    };
+    updateTooltip();
+    statusBarItem.command = undefined;
     statusBarItem.show();
     context.subscriptions.push(statusBarItem);
 
-    // FIXME: переписать статус бар
+    // Обновление lastStatus и tooltip при получении IndexingStatusNotification
     client.onNotification(IndexingStatusNotification, (params) => {
-        statusBarItem.text = `Go: Переменные: ${params.variables} | Функции: ${params.functions} | Каналы: ${params.channels} | Горутины: ${params.goroutines}`;
+        lastStatus.variables = params.variables;
+        lastStatus.functions = params.functions;
+        lastStatus.channels = params.channels;
+        lastStatus.goroutines = params.goroutines;
+        updateTooltip();
     });
 
     const decorationTypes = {

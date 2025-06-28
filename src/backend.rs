@@ -27,6 +27,7 @@ pub struct Backend {
     pub client: Client,
     pub documents: Mutex<HashMap<Url, String>>,
     pub parser: Mutex<Parser>,
+    pub trees: Mutex<HashMap<Url, Tree>>,
 }
 
 impl Backend {
@@ -40,18 +41,37 @@ impl Backend {
             client,
             documents: Mutex::new(HashMap::new()),
             parser: Mutex::new(parser),
+            trees: Mutex::new(HashMap::new()),
         }
     }
 
-    pub async fn parse_document(&self, code: &str) -> Option<Tree> {
+    /// Получить или обновить дерево для документа
+    pub async fn parse_document_with_cache(&self, uri: &Url, code: &str) -> Option<Tree> {
         let mut parser = self.parser.lock().await;
-        parser.parse(code, None)
+        let mut trees = self.trees.lock().await;
+        let prev_tree = trees.get(uri);
+        let new_tree = if let Some(prev) = prev_tree {
+            parser.parse(code, Some(prev))
+        } else {
+            parser.parse(code, None)
+        };
+        if let Some(ref tree) = new_tree {
+            trees.insert(uri.clone(), tree.clone());
+        }
+        new_tree
+    }
+
+    /// Получить дерево из кэша (если есть)
+    pub async fn get_tree_from_cache(&self, uri: &Url) -> Option<Tree> {
+        let trees = self.trees.lock().await;
+        trees.get(uri).cloned()
     }
 
     pub async fn send_indexing_status(&self, uri: &Url) {
         let docs = self.documents.lock().await;
         if let Some(code) = docs.get(uri) {
-            if let Some(tree) = self.parse_document(code).await {
+            let tree = self.parse_document_with_cache(uri, code).await;
+            if let Some(tree) = tree {
                 let counts = count_entities(&tree);
                 let params = IndexingStatusParams {
                     variables: counts.variables,
@@ -104,16 +124,25 @@ impl LanguageServer for Backend {
 
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
         let mut docs = self.documents.lock().await;
-        docs.insert(params.text_document.uri.clone(), params.text_document.text);
+        docs.insert(
+            params.text_document.uri.clone(),
+            params.text_document.text.clone(),
+        );
         drop(docs);
+        // Парсим и кэшируем дерево при открытии
+        self.parse_document_with_cache(&params.text_document.uri, &params.text_document.text)
+            .await;
         self.send_indexing_status(&params.text_document.uri).await;
     }
 
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
         let mut docs = self.documents.lock().await;
         if let Some(doc) = docs.get_mut(&params.text_document.uri) {
-            if let Some(change) = params.content_changes.into_iter().last() {
-                *doc = change.text;
+            if let Some(change) = params.content_changes.into_iter().next_back() {
+                *doc = change.text.clone();
+                // Инкрементальное обновление дерева
+                self.parse_document_with_cache(&params.text_document.uri, &change.text)
+                    .await;
             }
         }
         drop(docs);
@@ -130,7 +159,11 @@ impl LanguageServer for Backend {
                 return Ok(None);
             }
         };
-        let tree = match self.parse_document(code).await {
+        let tree = self.get_tree_from_cache(&uri).await.or_else(|| {
+            // Если нет в кэше, парсим и кэшируем
+            futures::executor::block_on(self.parse_document_with_cache(&uri, code))
+        });
+        let tree = match tree {
             Some(tree) => tree,
             None => {
                 return Ok(None);
@@ -191,7 +224,10 @@ impl LanguageServer for Backend {
                     return Ok(None);
                 }
             };
-            let tree = match self.parse_document(code).await {
+            let tree = self.get_tree_from_cache(&uri).await.or_else(|| {
+                futures::executor::block_on(self.parse_document_with_cache(&uri, code))
+            });
+            let tree = match tree {
                 Some(tree) => tree,
                 None => {
                     self.client

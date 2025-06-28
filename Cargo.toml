@@ -16,6 +16,5 @@ futures = "0.3.31"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt"] }
-tree-sitter = "0.22"
 tree-sitter-rust = "0.20"
 url = "2"

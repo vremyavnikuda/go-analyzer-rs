@@ -138,7 +138,7 @@ impl LanguageServer for Backend {
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
         let mut docs = self.documents.lock().await;
         if let Some(doc) = docs.get_mut(&params.text_document.uri) {
-            if let Some(change) = params.content_changes.into_iter().last() {
+            if let Some(change) = params.content_changes.into_iter().next_back() {
                 *doc = change.text.clone();
                 // Инкрементальное обновление дерева
                 self.parse_document_with_cache(&params.text_document.uri, &change.text)

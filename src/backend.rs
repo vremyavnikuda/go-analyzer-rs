@@ -1,4 +1,6 @@
-use crate::analysis::{count_entities, find_variable_at_position, is_in_goroutine};
+use crate::analysis::{
+    count_entities, determine_race_severity, find_variable_at_position, is_in_goroutine,
+};
 use crate::types::{Decoration, DecorationType, ProgressNotification};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -257,11 +259,33 @@ impl LanguageServer for Backend {
                     let mut hover_text = format!("Use of `{}`", var_info.name);
 
                     if is_in_goroutine(&tree, *use_range) {
-                        decoration_kind = DecorationType::Race;
-                        hover_text = format!(
-                            "Use of `{}` in goroutine - potential data race!",
-                            var_info.name
-                        );
+                        // Определяем приоритет гонки на основе контекста
+                        let race_severity = determine_race_severity(&tree, *use_range);
+                        var_info.race_severity = race_severity.clone();
+
+                        match race_severity {
+                            crate::types::RaceSeverity::High => {
+                                decoration_kind = DecorationType::Race;
+                                hover_text = format!(
+                                    "Use of `{}` in goroutine - HIGH PRIORITY data race!",
+                                    var_info.name
+                                );
+                            }
+                            crate::types::RaceSeverity::Medium => {
+                                decoration_kind = DecorationType::Race;
+                                hover_text = format!(
+                                    "Use of `{}` in goroutine - potential data race",
+                                    var_info.name
+                                );
+                            }
+                            crate::types::RaceSeverity::Low => {
+                                decoration_kind = DecorationType::RaceLow;
+                                hover_text = format!(
+                                    "Use of `{}` in goroutine - LOW PRIORITY (sync detected)",
+                                    var_info.name
+                                );
+                            }
+                        }
                         var_info.potential_race = true;
                     }
 

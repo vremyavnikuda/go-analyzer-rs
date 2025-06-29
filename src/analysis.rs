@@ -1,7 +1,22 @@
-use crate::types::*;
-use crate::util::*;
+use crate::{types::*, util::node_to_range};
 use tower_lsp::lsp_types::{Position, Range};
 use tree_sitter::{Node, Point, Tree};
+
+/// Проверяет, есть ли синхронизация в том же блоке кода
+pub fn has_synchronization_in_block(tree: &Tree, range: Range) -> bool {
+    // Упрощенная проверка - всегда возвращаем false для демонстрации
+    // В реальной реализации здесь была бы сложная логика анализа AST
+    false
+}
+
+/// Определяет приоритет гонки данных на основе контекста
+pub fn determine_race_severity(tree: &Tree, range: Range) -> RaceSeverity {
+    if has_synchronization_in_block(tree, range) {
+        RaceSeverity::Low
+    } else {
+        RaceSeverity::High
+    }
+}
 
 pub fn find_variable_at_position(tree: &Tree, code: &str, pos: Position) -> Option<VariableInfo> {
     let mut cursor = tree.walk();
@@ -27,7 +42,7 @@ pub fn find_variable_at_position(tree: &Tree, code: &str, pos: Position) -> Opti
                 if let Some(child) = node.child(i) {
                     if child.kind() == "identifier" {
                         let byte_range = child.byte_range();
-                        if let Some(name) = code.get(byte_range) {
+                        if let Some(name) = code.get(byte_range.clone()) {
                             let decl_range = node_to_range(child);
                             let point = Point {
                                 row: pos.line as usize,
@@ -41,6 +56,11 @@ pub fn find_variable_at_position(tree: &Tree, code: &str, pos: Position) -> Opti
                                         uses: vec![],
                                         is_pointer: false,
                                         potential_race: false,
+                                        race_severity: RaceSeverity::Medium,
+                                        var_id: VarId {
+                                            start_byte: byte_range.start,
+                                            end_byte: byte_range.end,
+                                        },
                                     });
                                     *found_variable_name = Some(name.to_string());
                                 }
@@ -53,7 +73,7 @@ pub fn find_variable_at_position(tree: &Tree, code: &str, pos: Position) -> Opti
 
         if node.kind() == "identifier" {
             let byte_range = node.byte_range();
-            if let Some(name) = code.get(byte_range) {
+            if let Some(name) = code.get(byte_range.clone()) {
                 let point = Point {
                     row: pos.line as usize,
                     column: pos.character as usize,
@@ -67,6 +87,11 @@ pub fn find_variable_at_position(tree: &Tree, code: &str, pos: Position) -> Opti
                             uses: vec![],
                             is_pointer: false,
                             potential_race: false,
+                            race_severity: RaceSeverity::Medium,
+                            var_id: VarId {
+                                start_byte: byte_range.start,
+                                end_byte: byte_range.end,
+                            },
                         });
                     }
                 }

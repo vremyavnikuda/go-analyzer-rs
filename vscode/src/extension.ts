@@ -21,7 +21,7 @@ let lastStatus = {
 
 interface Decoration {
     range: vscode.Range;
-    kind: "Declaration" | "Use" | "Pointer" | "Race";
+    kind: "Declaration" | "Use" | "Pointer" | "Race" | "RaceLow";
     hoverMessage: string;
 }
 
@@ -108,6 +108,12 @@ export function activate(context: vscode.ExtensionContext) {
             overviewRulerColor: vscode.workspace.getConfiguration("goAnalyzer").get("raceColor", "red"),
             overviewRulerLane: vscode.OverviewRulerLane.Right,
         }),
+        RaceLow: vscode.window.createTextEditorDecorationType({
+            textDecoration: "underline",
+            color: vscode.workspace.getConfiguration("goAnalyzer").get("raceLowColor", "orange"),
+            overviewRulerColor: vscode.workspace.getConfiguration("goAnalyzer").get("raceLowColor", "orange"),
+            overviewRulerLane: vscode.OverviewRulerLane.Right,
+        }),
     };
 
     const disposable = vscode.commands.registerCommand(
@@ -152,6 +158,7 @@ export function activate(context: vscode.ExtensionContext) {
                                 Use: [],
                                 Pointer: [],
                                 Race: [],
+                                RaceLow: [],
                             };
 
                             for (const deco of response) {
@@ -240,6 +247,7 @@ export function activate(context: vscode.ExtensionContext) {
                             Use: [],
                             Pointer: [],
                             Race: [],
+                            RaceLow: [],
                         };
 
                         for (const deco of response) {

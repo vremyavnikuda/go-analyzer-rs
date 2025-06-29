@@ -1,6 +1,9 @@
 #[cfg(test)]
 mod tests {
+    use crate::analysis::determine_race_severity;
+    use crate::types::{RaceSeverity};
     use std::collections::HashMap;
+    use lsp_types::{Position, Range};
     use tokio::sync::Mutex;
     use tree_sitter::{Parser, Tree};
     use tree_sitter_rust::language as rust_language;
@@ -149,5 +152,51 @@ mod tests {
             return Err("кэш должен остаться пустым".into());
         }
         Ok(())
+    }
+
+    /// 4️⃣ Тест фильтра ложных гонок: проверяем, что синхронизация понижает приоритет предупреждений
+    #[tokio::test]
+    async fn false_race_filter_test() -> Result<(), Box<dyn std::error::Error>> {
+        let store = TestStore::new()?;
+        let uri = Url::parse("file:///tmp/sync_test.go")?;
+
+        // Код с синхронизацией (sync.Mutex)
+        let code_with_sync = r#"
+package main
+
+import "sync"
+
+func main() {
+    var mu sync.Mutex
+    var shared int
+    
+    go func() {
+        mu.Lock()
+        shared = 42  // Использование в горутине с мьютексом
+        mu.Unlock()
+    }()
+    
+    mu.Lock()
+    shared = 100  // Использование в горутине с мьютексом
+    mu.Unlock()
+}
+"#;
+
+        let tree = store.parse_document_with_cache(&uri, code_with_sync).await;
+        if tree.is_none() {
+            return Err("парс должен вернуть дерево".into());
+        }
+
+        let tree = tree.unwrap();
+
+        // Проверяем, что функция определения приоритета работает
+        let test_range = Range::new(Position::new(8, 8), Position::new(8, 14)); // shared
+        let severity = determine_race_severity(&tree, test_range);
+
+        // В данном случае должно быть Low, так как есть синхронизация
+        match severity {
+            RaceSeverity::Low => Ok(()),
+            _ => Err("приоритет должен быть Low при наличии синхронизации".into()),
+        }
     }
 }

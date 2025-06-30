@@ -1,100 +1,72 @@
-###############################################################################
-# Makefile for Go-Analyzer-RS (Rust LSP server + VS Code extension)
-###############################################################################
+# Go-Analyzer-RS
 
-# Папка, в которой лежит сам Makefile  →  абсолютный путь
-MAKEFILE_DIR := $(realpath $(dir $(lastword $(MAKEFILE_LIST))))
-
-# Корень Rust-проекта (Makefile лежит рядом с Cargo.toml)
-ROOT_DIR      := $(MAKEFILE_DIR)
-VSCODE_DIR    := $(ROOT_DIR)/vscode
-CARGO_TOML    := $(ROOT_DIR)/Cargo.toml
-
-# Итоговые бинарники, которые собирает Cargo
-SERVER_SRC_WIN   := $(ROOT_DIR)/target/release/go-analyzer-rs.exe
-SERVER_SRC_LINUX := $(ROOT_DIR)/target/release/go-analyzer-rs
-
-# Место, куда кладём сервер внутри расширения
-SERVER_DEST      := $(VSCODE_DIR)/server/go-analyzer-rs  # без суффиксов!
-
-###############################################################################
-# Цель по умолчанию
-###############################################################################
 all:
-	@echo "Use 'make windows' or 'make linux' to build for a specific OS"
+	@echo "Use  make build-windows  or  make build-linux"
 
-###############################################################################
-# ----------------------------- Windows build ---------------------------------
-###############################################################################
-windows: win-clean win-build win-copy npm compile package
+# WINDOWS
+build-windows: win-clean win-build win-copy npm compile package
+	@echo "INFO: Full Windows build complete"
 
 win-clean:
-	@echo "Cleaning Rust project (Windows)…"
-	@cargo clean --manifest-path $(CARGO_TOML)
+	@cargo clean
+	@echo "INFO: Cleaning Rust project (Windows)"
+	@del /f /q "vscode\\server\\go-analyzer-rs.exe"
+	@echo "INFO: go-analyzer-rs.exe delete "vscode\server\go-analyzer-rs.exe""
+	@del /f /q "vscode\\go-analyzer-0.0.1.vsix"
+	@echo "INFO: go-analyzer-0.0.1.vsix delete "vscode\\go-analyzer-0.0.1.vsix""
+
 
 win-build:
-	@echo "Building Rust server for Windows…"
-	@cargo build --release --manifest-path $(CARGO_TOML)
+	@echo "INFO: Building Rust server for Windows"
+	@cargo build --release
 
-# Копируем с расширением .exe, но без «-win» в имени
 win-copy:
-	@echo "Copying Windows binary…"
-	@mkdir -p $(dir $(SERVER_DEST))
-	@cp $(SERVER_SRC_WIN) $(SERVER_DEST).exe
-	@echo "Copied to: $(SERVER_DEST).exe"
+	@echo "INFO: Copying server binary file"
+	@if not exist "vscode\\server" mkdir "vscode\\server"
+	@copy /Y "target\\release\\go-analyzer-rs.exe" "vscode\\server\\go-analyzer-rs.exe"
+	
+	
 
-###############################################################################
-# ------------------------------ Linux build ----------------------------------
-###############################################################################
-linux: unix-clean unix-build unix-copy npm compile package
+# LINUX
+build-linux: unix-clean unix-build unix-copy npm compile package
+	@echo "INFO: Full Linux build complete"
 
 unix-clean:
-	@echo "Cleaning Rust project (Linux)…"
-	@cargo clean --manifest-path $(CARGO_TOML)
+	@echo "INFO: Cleaning Rust project (Linux)"
+	@cargo clean
 
 unix-build:
-	@echo "Building Rust server for Linux…"
-	@cargo build --release --manifest-path $(CARGO_TOML)
+	@echo "INFO: Building Rust server for Linux"
+	@cargo build --release
 
-# Копируем без расширения и без «-linux» в имени
 unix-copy:
-	@echo "Copying Linux binary…"
-	@mkdir -p $(dir $(SERVER_DEST))
-	@cp $(SERVER_SRC_LINUX) $(SERVER_DEST)
-	@echo "Copied to: $(SERVER_DEST)"
+	@echo "INFO: Copying Linux binary"
+	@mkdir -p vscode/server
+	@cp target/release/go-analyzer-rs vscode/server/go-analyzer-rs
 
-###############################################################################
-# ------------------------------ Общие шаги -----------------------------------
-###############################################################################
+# Node / VS Code
 npm:
-	@echo "Installing Node.js dependencies…"
-	@npm --prefix $(VSCODE_DIR) install
+	@cd vscode && npm install
+	@echo "INFO: Installing Node.js dependencies"
 
 compile:
-	@echo "Compiling TypeScript client…"
-	@npm --prefix $(VSCODE_DIR) run compile
+	@cd vscode && npm run compile
+	@echo "INFO: Compiling TypeScript client"
 
 package:
-	@echo "Packaging VS Code extension…"
-	@cd $(VSCODE_DIR) && vsce package
+	@cd vscode && vsce package
+	@echo "INFO: Packaging VS Code extension"
 
-###############################################################################
-# Полная пересборка и очистка
-###############################################################################
-rebuild: clean all
+# «build»
+ifeq ($(OS),Windows_NT)
+build: build-windows
+else
+build: build-linux
+endif
 
-clean:
-	@echo "Cleaning Rust artifacts…"
-	@cargo clean --manifest-path $(CARGO_TOML)
-	@echo "Removing VS Code build artifacts…"
-	@rm -rf $(VSCODE_DIR)/out $(VSCODE_DIR)/node_modules
-
-###############################################################################
-# PHONY-цели
-###############################################################################
+# PHONY
 .PHONY: \
-	all windows linux \
+	all build build-windows build-linux \
 	win-clean win-build win-copy \
 	unix-clean unix-build unix-copy \
-	npm compile package \
-	clean rebuild
+	npm compile package

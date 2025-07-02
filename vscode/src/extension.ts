@@ -1,3 +1,4 @@
+// src/extension.ts
 import * as vscode from "vscode";
 import {
     LanguageClient,
@@ -10,32 +11,67 @@ import {
 import * as path from "path";
 import * as fs from "fs";
 
-let client: LanguageClient;
+/* ────────────────────────────────────────────────────────────────────────── */
+/*  Выбор бинарника                                                          */
+/* ────────────────────────────────────────────────────────────────────────── */
+function resolveServerPath(ctx: vscode.ExtensionContext): string {
+    const env = process.env.GO_ANALYZER_PATH;
+    if (env && fs.existsSync(env)) return env;
 
-let lastStatus = {
+    const bin = process.platform === "win32"
+        ? "go-analyzer-rs.exe"
+        : "go-analyzer-rs";
+
+    const primary = path.join(ctx.extensionPath, "server", bin);
+    const secondary = path.join(
+        ctx.extensionPath,
+        "server",
+        bin.endsWith(".exe") ? "go-analyzer-rs" : "go-analyzer-rs.exe",
+    );
+
+    if (fs.existsSync(primary)) return primary;
+    if (fs.existsSync(secondary)) return secondary;
+
+    throw new Error(
+        `Go-Analyzer binary not found.\nTried:\n  ${primary}\n  ${secondary}`,
+    );
+}
+
+/* ────────────────────────────────────────────────────────────────────────── */
+/*  Глобальное состояние                                                     */
+/* ────────────────────────────────────────────────────────────────────────── */
+let client: LanguageClient | undefined;
+
+const lastStatus = {
     variables: 0,
     functions: 0,
     channels: 0,
-    goroutines: 0
+    goroutines: 0,
 };
 
 interface Decoration {
     range: vscode.Range;
-    kind: "Declaration" | "Use" | "Pointer" | "Race";
+    kind: "Declaration" | "Use" | "Pointer" | "Race" | "RaceLow";
     hoverMessage: string;
 }
 
-const ProgressNotification = new NotificationType<{ message: string }>("goanalyzer/progress");
-const IndexingStatusNotification = new NotificationType<{ variables: number, functions: number, channels: number, goroutines: number }>("goanalyzer/indexingStatus");
+const ProgressNotification = new NotificationType<{ message: string }>(
+    "goanalyzer/progress",
+);
+const IndexingStatusNotification = new NotificationType<{
+    variables: number;
+    functions: number;
+    channels: number;
+    goroutines: number;
+}>("goanalyzer/indexingStatus");
 
+/* ────────────────────────────────────────────────────────────────────────── */
+/*  Активация                                                                */
+/* ────────────────────────────────────────────────────────────────────────── */
 export function activate(context: vscode.ExtensionContext) {
-    const serverModule = process.env.GO_ANALYZER_PATH || path.resolve(context.extensionPath, "server", "go-analyzer-rs.exe");
-    console.log(`Attempting to launch server at: ${serverModule}`);
-
-    if (!fs.existsSync(serverModule)) {
-        vscode.window.showErrorMessage(`Server binary not found at: ${serverModule}`);
-        return;
-    }
+    /* -------- запуск сервера -------- */
+    const serverModule = resolveServerPath(context);
+    console.log(`Launching Go-Analyzer server: ${serverModule}`);
 
     const serverOptions: ServerOptions = {
         run: { command: serverModule, transport: TransportKind.stdio } as Executable,
@@ -44,84 +80,92 @@ export function activate(context: vscode.ExtensionContext) {
 
     const clientOptions: LanguageClientOptions = {
         documentSelector: [{ scheme: "file", language: "go" }],
-        synchronize: {
-            fileEvents: vscode.workspace.createFileSystemWatcher("**/*.go"),
-        },
+        synchronize: { fileEvents: vscode.workspace.createFileSystemWatcher("**/*.go") },
         progressOnInitialization: true,
     };
 
-    client = new LanguageClient(
-        "goAnalyzer",
-        "Go Analyzer",
-        serverOptions,
-        clientOptions
-    );
+    client = new LanguageClient("goAnalyzer", "Go Analyzer", serverOptions, clientOptions);
 
-    // REVIEW: проверить работоспособность нового статус бара 
-    const statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
-    statusBarItem.text = "Go Analyzer";
+    /* -------- статус-бар -------- */
+    const statusBar = vscode.window.createStatusBarItem(
+        vscode.StatusBarAlignment.Right,
+        100,
+    );
+    statusBar.text = "Go Analyzer";
+
     const updateTooltip = () => {
-        const details = [
+        statusBar.tooltip = [
             `Переменные: ${lastStatus.variables}`,
             `Функции: ${lastStatus.functions}`,
             `Каналы: ${lastStatus.channels}`,
-            `Горутины: ${lastStatus.goroutines}`
-        ];
-        statusBarItem.tooltip = details.join("\n");
+            `Горутины: ${lastStatus.goroutines}`,
+        ].join("\n");
     };
     updateTooltip();
-    statusBarItem.command = undefined;
-    statusBarItem.show();
-    context.subscriptions.push(statusBarItem);
+    statusBar.show();
+    context.subscriptions.push(statusBar);
 
-    // Обновление lastStatus и tooltip при получении IndexingStatusNotification
-    client.onNotification(IndexingStatusNotification, (params) => {
-        lastStatus.variables = params.variables;
-        lastStatus.functions = params.functions;
-        lastStatus.channels = params.channels;
-        lastStatus.goroutines = params.goroutines;
+    /* -------- уведомления от сервера -------- */
+    client.onNotification(IndexingStatusNotification, p => {
+        lastStatus.variables = p.variables;
+        lastStatus.functions = p.functions;
+        lastStatus.channels = p.channels;
+        lastStatus.goroutines = p.goroutines;
         updateTooltip();
     });
+
+    client.onNotification(ProgressNotification, p => {
+        vscode.window.showInformationMessage(p.message);
+    });
+
+    /* -------- типы декораций -------- */
+    const cfg = (key: string, def: string) =>
+        vscode.workspace.getConfiguration("goAnalyzer").get<string>(key, def);
 
     const decorationTypes = {
         Declaration: vscode.window.createTextEditorDecorationType({
             textDecoration: "underline",
-            color: vscode.workspace.getConfiguration("goAnalyzer").get("declarationColor", "green"),
-            overviewRulerColor: vscode.workspace.getConfiguration("goAnalyzer").get("declarationColor", "green"),
+            color: cfg("declarationColor", "green"),
+            overviewRulerColor: cfg("declarationColor", "green"),
             overviewRulerLane: vscode.OverviewRulerLane.Right,
         }),
         Use: vscode.window.createTextEditorDecorationType({
             textDecoration: "underline",
-            color: vscode.workspace.getConfiguration("goAnalyzer").get("useColor", "yellow"),
-            overviewRulerColor: vscode.workspace.getConfiguration("goAnalyzer").get("useColor", "yellow"),
+            color: cfg("useColor", "yellow"),
+            overviewRulerColor: cfg("useColor", "yellow"),
             overviewRulerLane: vscode.OverviewRulerLane.Right,
         }),
         Pointer: vscode.window.createTextEditorDecorationType({
             textDecoration: "underline",
-            color: vscode.workspace.getConfiguration("goAnalyzer").get("pointerColor", "blue"),
-            overviewRulerColor: vscode.workspace.getConfiguration("goAnalyzer").get("pointerColor", "blue"),
+            color: cfg("pointerColor", "blue"),
+            overviewRulerColor: cfg("pointerColor", "blue"),
             overviewRulerLane: vscode.OverviewRulerLane.Right,
         }),
         Race: vscode.window.createTextEditorDecorationType({
             textDecoration: "underline",
-            color: vscode.workspace.getConfiguration("goAnalyzer").get("raceColor", "red"),
-            overviewRulerColor: vscode.workspace.getConfiguration("goAnalyzer").get("raceColor", "red"),
+            color: cfg("raceColor", "red"),
+            overviewRulerColor: cfg("raceColor", "red"),
+            overviewRulerLane: vscode.OverviewRulerLane.Right,
+        }),
+        RaceLow: vscode.window.createTextEditorDecorationType({
+            textDecoration: "underline",
+            color: vscode.workspace.getConfiguration("goAnalyzer").get("raceLowColor", "orange"),
+            overviewRulerColor: vscode.workspace.getConfiguration("goAnalyzer").get("raceLowColor", "orange"),
             overviewRulerLane: vscode.OverviewRulerLane.Right,
         }),
     };
 
-    const disposable = vscode.commands.registerCommand(
+    /* -------- команда showLifecycle -------- */
+    const lifecycleCmd = vscode.commands.registerCommand(
         "goanalyzer.showLifecycle",
         async () => {
             const editor = vscode.window.activeTextEditor;
-            if (!editor) {
-                vscode.window.showErrorMessage("No active editor found.");
+            if (!editor || editor.document.languageId !== "go") {
+                vscode.window.showErrorMessage("No Go editor is active.");
                 return;
             }
 
-            const position = editor.selection.active;
-            const uri = editor.document.uri;
-
+            const { selection, document } = editor;
             try {
                 await vscode.window.withProgress(
                     {
@@ -129,199 +173,394 @@ export function activate(context: vscode.ExtensionContext) {
                         title: "Go Analyzer",
                         cancellable: false,
                     },
-                    async (progress) => {
-                        progress.report({ message: "Analyzing variable..." });
+                    async progress => {
+                        progress.report({ message: "Analyzing variable…" });
 
-                        const response: Decoration[] = await client.sendRequest(
+                        const resp: Decoration[] = await client!.sendRequest(
                             "workspace/executeCommand",
                             {
                                 command: "goanalyzer/cursor",
-                                arguments: [{ textDocument: { uri: uri.toString() }, position }],
-                            }
+                                arguments: [
+                                    { textDocument: { uri: document.uri.toString() }, position: selection.active },
+                                ],
+                            },
                         );
 
-                        console.log("Server response:", JSON.stringify(response, null, 2));
-
+                        /* очистка + применение декораций */
                         for (const key in decorationTypes) {
                             editor.setDecorations(decorationTypes[key as keyof typeof decorationTypes], []);
                         }
 
-                        if (response && Array.isArray(response)) {
-                            const decorationsByType: { [key: string]: { range: vscode.Range; hoverMessage: string }[] } = {
+                        if (Array.isArray(resp)) {
+                            const byType: Record<string, vscode.DecorationOptions[]> = {
                                 Declaration: [],
                                 Use: [],
                                 Pointer: [],
                                 Race: [],
+                                RaceLow: [],
                             };
-
-                            for (const deco of response) {
+                            for (const d of resp) {
                                 const range = new vscode.Range(
-                                    new vscode.Position(deco.range.start.line, deco.range.start.character),
-                                    new vscode.Position(deco.range.end.line, deco.range.end.character)
+                                    new vscode.Position(d.range.start.line, d.range.start.character),
+                                    new vscode.Position(d.range.end.line, d.range.end.character),
                                 );
-                                decorationsByType[deco.kind].push({ range, hoverMessage: deco.hoverMessage });
+                                byType[d.kind].push({ range, hoverMessage: d.hoverMessage });
                             }
-
-                            for (const [kind, decorations] of Object.entries(decorationsByType)) {
-                                editor.setDecorations(decorationTypes[kind as keyof typeof decorationTypes], decorations);
+                            for (const [k, decos] of Object.entries(byType)) {
+                                editor.setDecorations(decorationTypes[k as keyof typeof decorationTypes], decos);
                             }
                         }
 
                         progress.report({ message: "Analysis complete" });
-                    }
+                    },
                 );
-            } catch (error) {
-                vscode.window.showErrorMessage(`Go Analyzer error: ${error}`);
-                console.error("Error executing command:", error);
+            } catch (err) {
+                vscode.window.showErrorMessage(`Go Analyzer error: ${err}`);
+                console.error(err);
             }
-        }
+        },
     );
+    context.subscriptions.push(lifecycleCmd);
 
-    // Автоматический анализ при изменении позиции курсора
-    let cursorChangeDisposable: vscode.Disposable | undefined;
-    let lastPosition: vscode.Position | undefined;
-    let analysisTimeout: NodeJS.Timeout | undefined;
+    /* -------- авто-анализ курсора -------- */
+    let cursorDisp: vscode.Disposable | undefined;
+    let lastPos: vscode.Position | undefined;
+    let timeoutHandle: NodeJS.Timeout | undefined;
 
     const startCursorTracking = () => {
-        if (cursorChangeDisposable) {
-            cursorChangeDisposable.dispose();
-        }
+        cursorDisp?.dispose();
 
-        cursorChangeDisposable = vscode.window.onDidChangeTextEditorSelection(async (event) => {
-            const editor = event.textEditor;
-            if (editor.document.languageId !== 'go') {
-                return;
-            }
+        cursorDisp = vscode.window.onDidChangeTextEditorSelection(evt => {
+            const editor = evt.textEditor;
+            if (editor.document.languageId !== "go") return;
 
-            // Проверяем, включен ли автоматический анализ
-            const enableAutoAnalysis = vscode.workspace.getConfiguration("goAnalyzer").get("enableAutoAnalysis", true);
-            if (!enableAutoAnalysis) {
-                return;
-            }
+            const enable = vscode.workspace.getConfiguration("goAnalyzer")
+                .get<boolean>("enableAutoAnalysis", true);
+            if (!enable) return;
 
-            const position = editor.selection.active;
+            const pos = editor.selection.active;
+            if (lastPos && pos.line === lastPos.line && pos.character === lastPos.character) return;
+            lastPos = pos;
 
-            // Проверяем, изменилась ли позиция курсора
-            if (lastPosition &&
-                lastPosition.line === position.line &&
-                lastPosition.character === position.character) {
-                return;
-            }
+            clearTimeout(timeoutHandle as NodeJS.Timeout);
 
-            lastPosition = position;
-
-            // Очищаем предыдущий таймаут
-            if (analysisTimeout) {
-                clearTimeout(analysisTimeout);
-            }
-
-            // Получаем задержку из настроек
-            const delay = vscode.workspace.getConfiguration("goAnalyzer").get("autoAnalysisDelay", 300);
-
-            // Запускаем анализ с небольшой задержкой для избежания частых запросов
-            analysisTimeout = setTimeout(async () => {
+            const delay = vscode.workspace.getConfiguration("goAnalyzer")
+                .get<number>("autoAnalysisDelay", 300);
+            timeoutHandle = setTimeout(async () => {
                 try {
-                    const response: Decoration[] = await client.sendRequest(
+                    const resp: Decoration[] = await client!.sendRequest(
                         "workspace/executeCommand",
                         {
                             command: "goanalyzer/cursor",
-                            arguments: [{ textDocument: { uri: editor.document.uri.toString() }, position }],
-                        }
+                            arguments: [
+                                { textDocument: { uri: editor.document.uri.toString() }, position: pos },
+                            ],
+                        },
                     );
 
-                    // Очищаем предыдущие декорации
                     for (const key in decorationTypes) {
                         editor.setDecorations(decorationTypes[key as keyof typeof decorationTypes], []);
                     }
 
-                    if (response && Array.isArray(response)) {
-                        const decorationsByType: { [key: string]: { range: vscode.Range; hoverMessage: string }[] } = {
+                    if (Array.isArray(resp)) {
+                        const byType: Record<string, vscode.DecorationOptions[]> = {
                             Declaration: [],
                             Use: [],
                             Pointer: [],
                             Race: [],
+                            RaceLow: [],
                         };
-
-                        for (const deco of response) {
+                        for (const d of resp) {
                             const range = new vscode.Range(
-                                new vscode.Position(deco.range.start.line, deco.range.start.character),
-                                new vscode.Position(deco.range.end.line, deco.range.end.character)
+                                new vscode.Position(d.range.start.line, d.range.start.character),
+                                new vscode.Position(d.range.end.line, d.range.end.character),
                             );
-                            decorationsByType[deco.kind].push({ range, hoverMessage: deco.hoverMessage });
+                            byType[d.kind].push({ range, hoverMessage: d.hoverMessage });
                         }
-
-                        for (const [kind, decorations] of Object.entries(decorationsByType)) {
-                            editor.setDecorations(decorationTypes[kind as keyof typeof decorationTypes], decorations);
+                        for (const [k, decos] of Object.entries(byType)) {
+                            editor.setDecorations(decorationTypes[k as keyof typeof decorationTypes], decos);
                         }
                     }
-                } catch (error) {
-                    console.error("Auto-analysis error:", error);
+                } catch (err) {
+                    console.error("Auto-analysis error:", err);
                 }
             }, delay);
         });
     };
 
-    // Запускаем отслеживание курсора при активации расширения
     startCursorTracking();
+    if (cursorDisp) context.subscriptions.push(cursorDisp);
 
-    // Перезапускаем отслеживание при смене активного редактора
-    const editorChangeDisposable = vscode.window.onDidChangeActiveTextEditor((editor) => {
-        if (editor && editor.document.languageId === 'go') {
-            startCursorTracking();
-        }
-    });
+    context.subscriptions.push(
+        vscode.window.onDidChangeActiveTextEditor(ed => {
+            if (ed && ed.document.languageId === "go") startCursorTracking();
+        }),
+    );
 
+    /* -------- hover provider -------- */
     vscode.languages.registerHoverProvider("go", {
-        async provideHover(document: vscode.TextDocument, position: vscode.Position, token: vscode.CancellationToken) {
+        async provideHover(doc, pos, token) {
             try {
-                const response: any = await client.sendRequest(
+                const resp: any = await client!.sendRequest(
                     "textDocument/hover",
-                    { textDocument: { uri: document.uri.toString() }, position },
-                    token
+                    { textDocument: { uri: doc.uri.toString() }, position: pos },
+                    token,
                 );
-                console.log("Hover response:", JSON.stringify(response, null, 2));
-                if (response && response.contents) {
-                    return new vscode.Hover(response.contents, response.range);
+                if (resp && resp.contents) {
+                    return new vscode.Hover(resp.contents, resp.range);
                 }
                 return null;
-            } catch (error) {
-                vscode.window.showErrorMessage(`Hover error: ${error}`);
-                console.error("Error in hover provider:", error);
+            } catch (err) {
+                vscode.window.showErrorMessage(`Hover error: ${err}`);
+                console.error(err);
                 return null;
             }
         },
     });
 
-    client.onNotification(ProgressNotification, (params: { message: string }) => {
-        vscode.window.showInformationMessage(params.message);
-    });
-
-    client.start().then(() => {
-        vscode.window.showInformationMessage("Go Analyzer started");
-    }).catch((error) => {
-        vscode.window.showErrorMessage(`Failed to start Go Analyzer: ${error}`);
-        console.error("Failed to start client:", error);
-    });
-
-    context.subscriptions.push(disposable);
-    context.subscriptions.push(editorChangeDisposable);
-
-    // Очистка ресурсов при деактивации
-    context.subscriptions.push({
-        dispose: () => {
-            if (cursorChangeDisposable) {
-                cursorChangeDisposable.dispose();
+    /* -------- команда showGraph -------- */
+    const showGraphCmd = vscode.commands.registerCommand(
+        "goanalyzer.showGraph",
+        async () => {
+            const editor = vscode.window.activeTextEditor;
+            if (!editor || editor.document.languageId !== "go") {
+                vscode.window.showErrorMessage("No Go editor is active.");
+                return;
             }
-            if (analysisTimeout) {
-                clearTimeout(analysisTimeout);
+            const uri = editor.document.uri.toString();
+            // Запрашиваем у сервера JSON-граф
+            const graph: any = await client!.sendRequest(
+                "workspace/executeCommand",
+                {
+                    command: "goanalyzer/graph",
+                    arguments: [{ uri }],
+                },
+            );
+            if (!graph || !graph.nodes) {
+                vscode.window.showErrorMessage("No graph data received.");
+                return;
             }
+            // Логирование на стороне расширения
+            console.log('GRAPH FROM SERVER', graph);
+            // Добавить недостающие узлы (callsite, sync и т.д.) в graph.nodes
+            const allNodeIds = new Set(graph.nodes.map((n: any) => n.id));
+            for (const e of graph.edges) {
+                if (!allNodeIds.has(e.from)) {
+                    graph.nodes.push({
+                        id: e.from,
+                        label: e.from.split(":")[0],
+                        entity_type: "CallSite",
+                        range: null,
+                        extra: null
+                    });
+                    allNodeIds.add(e.from);
+                }
+                if (!allNodeIds.has(e.to)) {
+                    graph.nodes.push({
+                        id: e.to,
+                        label: e.to.split(":")[0],
+                        entity_type: "CallSite",
+                        range: null,
+                        extra: null
+                    });
+                    allNodeIds.add(e.to);
+                }
+            }
+            // Открываем webview с SVG-графом
+            const panel = vscode.window.createWebviewPanel(
+                "goanalyzer-graph",
+                "Go Analyzer: Граф кода",
+                vscode.ViewColumn.Beside,
+                { enableScripts: true }
+            );
+            // Цвета для сущностей
+            const colorMap: Record<string, string> = {
+                Variable: "#4caf50",
+                Function: "#2196f3",
+                Channel: "#ff9800",
+                Goroutine: "#9c27b0",
+                SyncBlock: "#607d8b",
+            };
+            // SVG-узлы
+            const svgNodes = graph.nodes.map((n: any, i: number) => {
+                const color = colorMap[n.entity_type] || "#888";
+                // Простая раскладка: по кругу
+                const angle = (2 * Math.PI * i) / graph.nodes.length;
+                const cx = 250 + 180 * Math.cos(angle);
+                const cy = 250 + 180 * Math.sin(angle);
+                return `<circle cx="${cx}" cy="${cy}" r="24" fill="${color}" stroke="#222" stroke-width="2"/>
+                    <text x="${cx}" y="${cy + 5}" text-anchor="middle" font-size="13" fill="#fff">${n.label}</text>`;
+            }).join("\n");
+            // SVG-ребра
+            const svgEdges = graph.edges.map((e: any) => {
+                const fromIdx = graph.nodes.findIndex((n: any) => n.id === e.from);
+                const toIdx = graph.nodes.findIndex((n: any) => n.id === e.to);
+                if (fromIdx === -1 || toIdx === -1) return "";
+                const angle1 = (2 * Math.PI * fromIdx) / graph.nodes.length;
+                const angle2 = (2 * Math.PI * toIdx) / graph.nodes.length;
+                const x1 = 250 + 180 * Math.cos(angle1);
+                const y1 = 250 + 180 * Math.sin(angle1);
+                const x2 = 250 + 180 * Math.cos(angle2);
+                const y2 = 250 + 180 * Math.sin(angle2);
+                return `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="#aaa" stroke-width="2" marker-end="url(#arrow)"/>`;
+            }).join("\n");
+            // Легенда
+            const legend = Object.entries(colorMap).map(([k, v]) =>
+                `<span style="display:inline-block;width:16px;height:16px;background:${v};margin-right:6px;border-radius:3px;"></span>${k}`
+            ).join(" &nbsp; ");
+            const html = `
+                <!DOCTYPE html>
+                <html lang="en">
+                <head>
+                  <meta charset="UTF-8">
+                  <title>Go Analyzer Graph</title>
+                  <script src="https://d3js.org/d3.v7.min.js"></script>
+                  <style>
+                    .node { cursor: pointer; stroke: #fff; stroke-width: 1.5px; }
+                    .edge-use { stroke: #999; stroke-width: 2px; }
+                    .edge-call { stroke: #1f77b4; stroke-width: 2.5px; }
+                    .edge-send { stroke: #2ca02c; stroke-width: 2.5px; }
+                    .edge-receive { stroke: #ff7f0e; stroke-width: 2.5px; }
+                    .edge-spawn { stroke: #d62728; stroke-width: 2.5px; }
+                    .edge-sync { stroke: #9467bd; stroke-width: 2.5px; }
+                    .legend { font-size: 13px; }
+                  </style>
+                </head>
+                <body>
+                  <svg id="graph" width="1400" height="900"></svg>
+                  <script>
+                    window.__GRAPH_DATA__ = ${JSON.stringify(graph)};
+                    console.log('GRAPH DATA', window.__GRAPH_DATA__);
+                    console.log('NODES', window.__GRAPH_DATA__.nodes);
+                    console.log('EDGES', window.__GRAPH_DATA__.edges);
+                    console.log('D3', typeof d3);
+                  </script>
+                  <script>
+                    const vscode = acquireVsCodeApi();
+                    const graph = window.__GRAPH_DATA__;
+                    // Преобразуем from/to в source/target для d3
+                    const edges = graph.edges.map(e => ({ ...e, source: e.from, target: e.to }));
+                    const width = 1400, height = 900;
+                    const svg = d3.select("#graph")
+                      .call(d3.zoom().on("zoom", (event) => {
+                        svg.selectAll("g").attr("transform", event.transform);
+                      }));
+                    const simulation = d3.forceSimulation(graph.nodes)
+                      .force("link", d3.forceLink(edges).id(d => d.id).distance(120))
+                      .force("charge", d3.forceManyBody().strength(-200))
+                      .force("center", d3.forceCenter(width / 2, height / 2));
+                    // Edge color by type
+                    function edgeClass(type) {
+                      switch(type) {
+                        case "Call": return "edge-call";
+                        case "Send": return "edge-send";
+                        case "Receive": return "edge-receive";
+                        case "Spawn": return "edge-spawn";
+                        case "Sync": return "edge-sync";
+                        default: return "edge-use";
+                      }
+                    }
+                    // Draw edges
+                    const link = svg.append("g")
+                      .attr("stroke", "#999").attr("stroke-opacity", 0.6)
+                      .selectAll("line")
+                      .data(edges)
+                      .enter().append("line")
+                      .attr("class", d => edgeClass(d.edge_type));
+                    // Draw nodes
+                    const node = svg.append("g")
+                      .attr("stroke", "#fff").attr("stroke-width", 1.5)
+                      .selectAll("circle")
+                      .data(graph.nodes)
+                      .enter().append("circle")
+                      .attr("r", 18)
+                      .attr("fill", d => {
+                        switch(d.entity_type) {
+                          case "Variable": return "#ffe066";
+                          case "Function": return "#6ab0f3";
+                          case "Channel": return "#b6e3a7";
+                          case "Goroutine": return "#f7a6a6";
+                          case "SyncBlock": return "#c3a6f7";
+                          default: return "#ccc";
+                        }
+                      })
+                      .on("click", (event, d) => {
+                        vscode.postMessage({ type: "goto", id: d.id });
+                      });
+                    // Add labels
+                    svg.append("g")
+                      .selectAll("text")
+                      .data(graph.nodes)
+                      .enter().append("text")
+                      .attr("text-anchor", "middle")
+                      .attr("dy", 5)
+                      .text(d => d.label);
+                    // Add tooltips
+                    node.append("title")
+                      .text(function(d) {
+                        return d.label + " (" + d.entity_type + ")" + (d.range ? " | Line: " + (d.range.start.line + 1) : "");
+                      });
+                    // Simulation tick
+                    simulation.on("tick", () => {
+                      link.attr("x1", d => d.source.x)
+                          .attr("y1", d => d.source.y)
+                          .attr("x2", d => d.target.x)
+                          .attr("y2", d => d.target.y);
+                      node.attr("cx", d => d.x)
+                          .attr("cy", d => d.y);
+                      svg.selectAll("text")
+                        .attr("x", d => d.x)
+                        .attr("y", d => d.y);
+                    });
+                    // Legend
+                    svg.append("g").attr("class", "legend").attr("transform", "translate(10,10)")
+                      .selectAll("text")
+                      .data([
+                        ["Variable", "#ffe066"],
+                        ["Function", "#6ab0f3"],
+                        ["Channel", "#b6e3a7"],
+                        ["Goroutine", "#f7a6a6"],
+                        ["SyncBlock", "#c3a6f7"]
+                      ])
+                      .enter().append("text")
+                      .attr("y", (d,i) => i*20)
+                      .attr("fill", d => d[1])
+                      .text(d => d[0]);
+                    svg.append("g").attr("class", "legend").attr("transform", "translate(150,10)")
+                      .selectAll("text")
+                      .data([
+                        ["Use", "#999"],
+                        ["Call", "#1f77b4"],
+                        ["Send", "#2ca02c"],
+                        ["Receive", "#ff7f0e"],
+                        ["Spawn", "#d62728"],
+                        ["Sync", "#9467bd"]
+                      ])
+                      .enter().append("text")
+                      .attr("y", (d,i) => i*20)
+                      .attr("fill", d => d[1])
+                      .text(d => d[0]);
+                  </script>
+                </body>
+                </html>
+            `;
+            panel.webview.html = html;
         }
-    });
+    );
+    context.subscriptions.push(showGraphCmd);
+
+    /* -------- запуск клиента -------- */
+    client.start()
+        .then(() => vscode.window.showInformationMessage("Go Analyzer started"))
+        .catch(err => {
+            vscode.window.showErrorMessage(`Failed to start Go Analyzer: ${err}`);
+            console.error(err);
+        });
 }
 
-export function deactivate(): Promise<void> | undefined {
-    if (!client) {
-        return undefined;
-    }
-    return client.stop();
+/* ────────────────────────────────────────────────────────────────────────── */
+/*  Деактивация                                                              */
+/* ────────────────────────────────────────────────────────────────────────── */
+export function deactivate(): Thenable<void> | undefined {
+    return client?.stop();
 }

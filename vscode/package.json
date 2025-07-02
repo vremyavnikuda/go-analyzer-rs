@@ -22,6 +22,10 @@
       {
         "command": "goanalyzer.showLifecycle",
         "title": "Go Analyzer: Show Lifecycle"
+      },
+      {
+        "command": "goanalyzer.showGraph",
+        "title": "Go Analyzer: Show Graph"
       }
     ],
     "configuration": {

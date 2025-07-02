@@ -318,6 +318,237 @@ export function activate(context: vscode.ExtensionContext) {
         },
     });
 
+    /* -------- команда showGraph -------- */
+    const showGraphCmd = vscode.commands.registerCommand(
+        "goanalyzer.showGraph",
+        async () => {
+            const editor = vscode.window.activeTextEditor;
+            if (!editor || editor.document.languageId !== "go") {
+                vscode.window.showErrorMessage("No Go editor is active.");
+                return;
+            }
+            const uri = editor.document.uri.toString();
+            // Запрашиваем у сервера JSON-граф
+            const graph: any = await client!.sendRequest(
+                "workspace/executeCommand",
+                {
+                    command: "goanalyzer/graph",
+                    arguments: [{ uri }],
+                },
+            );
+            if (!graph || !graph.nodes) {
+                vscode.window.showErrorMessage("No graph data received.");
+                return;
+            }
+            // Логирование на стороне расширения
+            console.log('GRAPH FROM SERVER', graph);
+            // Добавить недостающие узлы (callsite, sync и т.д.) в graph.nodes
+            const allNodeIds = new Set(graph.nodes.map((n: any) => n.id));
+            for (const e of graph.edges) {
+                if (!allNodeIds.has(e.from)) {
+                    graph.nodes.push({
+                        id: e.from,
+                        label: e.from.split(":")[0],
+                        entity_type: "CallSite",
+                        range: null,
+                        extra: null
+                    });
+                    allNodeIds.add(e.from);
+                }
+                if (!allNodeIds.has(e.to)) {
+                    graph.nodes.push({
+                        id: e.to,
+                        label: e.to.split(":")[0],
+                        entity_type: "CallSite",
+                        range: null,
+                        extra: null
+                    });
+                    allNodeIds.add(e.to);
+                }
+            }
+            // Открываем webview с SVG-графом
+            const panel = vscode.window.createWebviewPanel(
+                "goanalyzer-graph",
+                "Go Analyzer: Граф кода",
+                vscode.ViewColumn.Beside,
+                { enableScripts: true }
+            );
+            // Цвета для сущностей
+            const colorMap: Record<string, string> = {
+                Variable: "#4caf50",
+                Function: "#2196f3",
+                Channel: "#ff9800",
+                Goroutine: "#9c27b0",
+                SyncBlock: "#607d8b",
+            };
+            // SVG-узлы
+            const svgNodes = graph.nodes.map((n: any, i: number) => {
+                const color = colorMap[n.entity_type] || "#888";
+                // Простая раскладка: по кругу
+                const angle = (2 * Math.PI * i) / graph.nodes.length;
+                const cx = 250 + 180 * Math.cos(angle);
+                const cy = 250 + 180 * Math.sin(angle);
+                return `<circle cx="${cx}" cy="${cy}" r="24" fill="${color}" stroke="#222" stroke-width="2"/>
+                    <text x="${cx}" y="${cy + 5}" text-anchor="middle" font-size="13" fill="#fff">${n.label}</text>`;
+            }).join("\n");
+            // SVG-ребра
+            const svgEdges = graph.edges.map((e: any) => {
+                const fromIdx = graph.nodes.findIndex((n: any) => n.id === e.from);
+                const toIdx = graph.nodes.findIndex((n: any) => n.id === e.to);
+                if (fromIdx === -1 || toIdx === -1) return "";
+                const angle1 = (2 * Math.PI * fromIdx) / graph.nodes.length;
+                const angle2 = (2 * Math.PI * toIdx) / graph.nodes.length;
+                const x1 = 250 + 180 * Math.cos(angle1);
+                const y1 = 250 + 180 * Math.sin(angle1);
+                const x2 = 250 + 180 * Math.cos(angle2);
+                const y2 = 250 + 180 * Math.sin(angle2);
+                return `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="#aaa" stroke-width="2" marker-end="url(#arrow)"/>`;
+            }).join("\n");
+            // Легенда
+            const legend = Object.entries(colorMap).map(([k, v]) =>
+                `<span style="display:inline-block;width:16px;height:16px;background:${v};margin-right:6px;border-radius:3px;"></span>${k}`
+            ).join(" &nbsp; ");
+            const html = `
+                <!DOCTYPE html>
+                <html lang="en">
+                <head>
+                  <meta charset="UTF-8">
+                  <title>Go Analyzer Graph</title>
+                  <script src="https://d3js.org/d3.v7.min.js"></script>
+                  <style>
+                    .node { cursor: pointer; stroke: #fff; stroke-width: 1.5px; }
+                    .edge-use { stroke: #999; stroke-width: 2px; }
+                    .edge-call { stroke: #1f77b4; stroke-width: 2.5px; }
+                    .edge-send { stroke: #2ca02c; stroke-width: 2.5px; }
+                    .edge-receive { stroke: #ff7f0e; stroke-width: 2.5px; }
+                    .edge-spawn { stroke: #d62728; stroke-width: 2.5px; }
+                    .edge-sync { stroke: #9467bd; stroke-width: 2.5px; }
+                    .legend { font-size: 13px; }
+                  </style>
+                </head>
+                <body>
+                  <svg id="graph" width="1400" height="900"></svg>
+                  <script>
+                    window.__GRAPH_DATA__ = ${JSON.stringify(graph)};
+                    console.log('GRAPH DATA', window.__GRAPH_DATA__);
+                    console.log('NODES', window.__GRAPH_DATA__.nodes);
+                    console.log('EDGES', window.__GRAPH_DATA__.edges);
+                    console.log('D3', typeof d3);
+                  </script>
+                  <script>
+                    const vscode = acquireVsCodeApi();
+                    const graph = window.__GRAPH_DATA__;
+                    // Преобразуем from/to в source/target для d3
+                    const edges = graph.edges.map(e => ({ ...e, source: e.from, target: e.to }));
+                    const width = 1400, height = 900;
+                    const svg = d3.select("#graph")
+                      .call(d3.zoom().on("zoom", (event) => {
+                        svg.selectAll("g").attr("transform", event.transform);
+                      }));
+                    const simulation = d3.forceSimulation(graph.nodes)
+                      .force("link", d3.forceLink(edges).id(d => d.id).distance(120))
+                      .force("charge", d3.forceManyBody().strength(-200))
+                      .force("center", d3.forceCenter(width / 2, height / 2));
+                    // Edge color by type
+                    function edgeClass(type) {
+                      switch(type) {
+                        case "Call": return "edge-call";
+                        case "Send": return "edge-send";
+                        case "Receive": return "edge-receive";
+                        case "Spawn": return "edge-spawn";
+                        case "Sync": return "edge-sync";
+                        default: return "edge-use";
+                      }
+                    }
+                    // Draw edges
+                    const link = svg.append("g")
+                      .attr("stroke", "#999").attr("stroke-opacity", 0.6)
+                      .selectAll("line")
+                      .data(edges)
+                      .enter().append("line")
+                      .attr("class", d => edgeClass(d.edge_type));
+                    // Draw nodes
+                    const node = svg.append("g")
+                      .attr("stroke", "#fff").attr("stroke-width", 1.5)
+                      .selectAll("circle")
+                      .data(graph.nodes)
+                      .enter().append("circle")
+                      .attr("r", 18)
+                      .attr("fill", d => {
+                        switch(d.entity_type) {
+                          case "Variable": return "#ffe066";
+                          case "Function": return "#6ab0f3";
+                          case "Channel": return "#b6e3a7";
+                          case "Goroutine": return "#f7a6a6";
+                          case "SyncBlock": return "#c3a6f7";
+                          default: return "#ccc";
+                        }
+                      })
+                      .on("click", (event, d) => {
+                        vscode.postMessage({ type: "goto", id: d.id });
+                      });
+                    // Add labels
+                    svg.append("g")
+                      .selectAll("text")
+                      .data(graph.nodes)
+                      .enter().append("text")
+                      .attr("text-anchor", "middle")
+                      .attr("dy", 5)
+                      .text(d => d.label);
+                    // Add tooltips
+                    node.append("title")
+                      .text(function(d) {
+                        return d.label + " (" + d.entity_type + ")" + (d.range ? " | Line: " + (d.range.start.line + 1) : "");
+                      });
+                    // Simulation tick
+                    simulation.on("tick", () => {
+                      link.attr("x1", d => d.source.x)
+                          .attr("y1", d => d.source.y)
+                          .attr("x2", d => d.target.x)
+                          .attr("y2", d => d.target.y);
+                      node.attr("cx", d => d.x)
+                          .attr("cy", d => d.y);
+                      svg.selectAll("text")
+                        .attr("x", d => d.x)
+                        .attr("y", d => d.y);
+                    });
+                    // Legend
+                    svg.append("g").attr("class", "legend").attr("transform", "translate(10,10)")
+                      .selectAll("text")
+                      .data([
+                        ["Variable", "#ffe066"],
+                        ["Function", "#6ab0f3"],
+                        ["Channel", "#b6e3a7"],
+                        ["Goroutine", "#f7a6a6"],
+                        ["SyncBlock", "#c3a6f7"]
+                      ])
+                      .enter().append("text")
+                      .attr("y", (d,i) => i*20)
+                      .attr("fill", d => d[1])
+                      .text(d => d[0]);
+                    svg.append("g").attr("class", "legend").attr("transform", "translate(150,10)")
+                      .selectAll("text")
+                      .data([
+                        ["Use", "#999"],
+                        ["Call", "#1f77b4"],
+                        ["Send", "#2ca02c"],
+                        ["Receive", "#ff7f0e"],
+                        ["Spawn", "#d62728"],
+                        ["Sync", "#9467bd"]
+                      ])
+                      .enter().append("text")
+                      .attr("y", (d,i) => i*20)
+                      .attr("fill", d => d[1])
+                      .text(d => d[0]);
+                  </script>
+                </body>
+                </html>
+            `;
+            panel.webview.html = html;
+        }
+    );
+    context.subscriptions.push(showGraphCmd);
+
     /* -------- запуск клиента -------- */
     client.start()
         .then(() => vscode.window.showInformationMessage("Go Analyzer started"))

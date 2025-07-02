@@ -1,202 +1,174 @@
+// tests.rs
+// Unit tests for synchronization and AST analysis utilities
+use super::*;
+use tower_lsp::lsp_types::Position;
+use tree_sitter::Parser;
+
+fn parse_go(code: &str) -> tree_sitter::Tree {
+    let mut parser = Parser::new();
+    parser
+        .set_language(tree_sitter_go::language())
+        .expect("Error loading Go grammar");
+    parser.parse(code, None).expect("Failed to parse code")
+}
+
 #[cfg(test)]
 mod tests {
-    use crate::analysis::determine_race_severity;
-    use crate::types::{RaceSeverity};
-    use std::collections::HashMap;
-    use lsp_types::{Position, Range};
-    use tokio::sync::Mutex;
-    use tree_sitter::{Parser, Tree};
-    use tree_sitter_rust::language as rust_language;
-    use url::Url;
+    use crate::analysis::has_synchronization_in_block;
 
-    /// Упрощённое хранилище, воспроизводящее поля, которые использует метод.
-    struct TestStore {
-        parser: Mutex<Parser>,
-        trees: Mutex<HashMap<Url, Tree>>,
+    use super::*;
+    use tower_lsp::lsp_types::{Position, Range};
+
+    #[test]
+    fn test_has_synchronization_in_block_mutex() {
+        let code = r#"
+func example() {
+    var x int
+    {
+        mutex.Lock()
+        x = 1
+        mutex.Unlock()
     }
-
-    impl TestStore {
-        fn new() -> Result<Self, tree_sitter::LanguageError> {
-            let mut parser = Parser::new();
-            parser.set_language(rust_language())?;
-            Ok(Self {
-                parser: Mutex::new(parser),
-                trees: Mutex::new(HashMap::new()),
-            })
-        }
-
-        async fn parse_document_with_cache(&self, uri: &Url, code: &str) -> Option<Tree> {
-            let mut parser = self.parser.lock().await;
-            let mut trees = self.trees.lock().await;
-            let prev_tree = trees.get(uri);
-            let new_tree = if let Some(prev) = prev_tree {
-                parser.parse(code, Some(prev))
-            } else {
-                parser.parse(code, None)
-            };
-            if let Some(ref tree) = new_tree {
-                trees.insert(uri.clone(), tree.clone());
-            }
-            new_tree
-        }
-    }
-
-    /// 1️⃣ Первый парс: дерево должно вернуться и попасть в кэш.
-    #[tokio::test]
-    async fn initial_parse_stores_tree_in_cache() -> Result<(), Box<dyn std::error::Error>> {
-        let store = TestStore::new()?;
-
-        let uri = Url::parse("file:///tmp/example.rs")?;
-        let code = "fn main() { println!(\"Hello\"); }";
-
-        let tree = store.parse_document_with_cache(&uri, code).await;
-
-        if tree.is_none() {
-            return Err("первый парс должен вернуть дерево".into());
-        }
-        if !store.trees.lock().await.contains_key(&uri) {
-            return Err("после парса дерево должно быть закэшировано".into());
-        }
-
-        Ok(())
-    }
-
-    /// 2️⃣ Повторный парс с изменённым текстом:
-    /// - используется **prev_tree**,
-    /// - кэш обновляется новым деревом.
-    #[tokio::test]
-    async fn reparse_uses_cache_and_updates_tree() -> Result<(), Box<dyn std::error::Error>> {
-        let store = TestStore::new()?;
-        let uri = Url::parse("file:///tmp/example.rs")?;
-        let code_v1 = "fn main() { let a = 1; }";
-        let code_v2 = "fn main() { let b = 2; }";
-
-        let first_tree = match store.parse_document_with_cache(&uri, code_v1).await {
-            Some(tree) => tree,
-            None => return Err("первый парс должен вернуть дерево".into()),
-        };
-
-        let second_tree = match store.parse_document_with_cache(&uri, code_v2).await {
-            Some(tree) => tree,
-            None => return Err("второй парс должен вернуть дерево".into()),
-        };
-
-        if first_tree.changed_ranges(&second_tree).next().is_some() {
-            return Err("дерево должно измениться после правки".into());
-        }
-
-        let bilding = store.trees.lock().await;
-        let cached_tree = match bilding.get(&uri) {
-            Some(tree) => tree,
-            None => return Err("в кэше не найдено дерево после повторного парса".into()),
-        };
-        let cached_sexp = cached_tree.root_node().to_sexp();
-        let second_sexp = second_tree.root_node().to_sexp();
-        if cached_sexp != second_sexp {
-            return Err("в кэше должно лежать именно новое дерево".into());
-        }
-
-        Ok(())
-    }
-
-    /// 3️⃣ Неуспешный парс (*parser.parse* вернул `None`) не должен трогать кэш.
-    #[tokio::test]
-    async fn failed_parse_does_not_touch_cache() -> Result<(), Box<dyn std::error::Error>> {
-        /// Заглушка-парсер, который всегда «падает».
-        struct FailingParser;
-        impl FailingParser {
-            fn parse(&mut self, _code: &str, _prev: Option<&Tree>) -> Option<Tree> {
-                None
-            }
-        }
-
-        use tokio::sync::Mutex as TokioMutex;
-        struct FailingStore {
-            parser: TokioMutex<FailingParser>,
-            trees: TokioMutex<HashMap<Url, Tree>>,
-        }
-        impl FailingStore {
-            fn new() -> Self {
-                Self {
-                    parser: TokioMutex::new(FailingParser),
-                    trees: TokioMutex::new(HashMap::new()),
-                }
-            }
-            async fn parse_document_with_cache(&self, uri: &Url, code: &str) -> Option<Tree> {
-                let mut parser = self.parser.lock().await;
-                let mut trees = self.trees.lock().await;
-                let prev_tree = trees.get(uri);
-                let new_tree = if let Some(prev) = prev_tree {
-                    parser.parse(code, Some(prev))
-                } else {
-                    parser.parse(code, None)
-                };
-                if let Some(ref tree) = new_tree {
-                    trees.insert(uri.clone(), tree.clone());
-                }
-                new_tree
-            }
-        }
-
-        let store = FailingStore::new();
-        let uri = match Url::parse("file:///tmp/broken.rs") {
-            Ok(u) => u,
-            Err(_) => return Ok(()), // Тест завершится досрочно без паники
-        };
-
-        let result = store.parse_document_with_cache(&uri, "broken code").await;
-        if result.is_some() {
-            return Err("метод должен вернуть None".into());
-        }
-        if store.trees.lock().await.get(&uri).is_some() {
-            return Err("кэш должен остаться пустым".into());
-        }
-        Ok(())
-    }
-
-    /// 4️⃣ Тест фильтра ложных гонок: проверяем, что синхронизация понижает приоритет предупреждений
-    #[tokio::test]
-    async fn false_race_filter_test() -> Result<(), Box<dyn std::error::Error>> {
-        let store = TestStore::new()?;
-        let uri = Url::parse("file:///tmp/sync_test.go")?;
-
-        // Код с синхронизацией (sync.Mutex)
-        let code_with_sync = r#"
-package main
-
-import "sync"
-
-func main() {
-    var mu sync.Mutex
-    var shared int
-    
-    go func() {
-        mu.Lock()
-        shared = 42  // Использование в горутине с мьютексом
-        mu.Unlock()
-    }()
-    
-    mu.Lock()
-    shared = 100  // Использование в горутине с мьютексом
-    mu.Unlock()
 }
-"#;
+        "#;
+        let tree = parse_go(code);
+        // Position inside the inner block
+        let range = Range::new(Position::new(2, 12), Position::new(2, 12));
+        assert!(has_synchronization_in_block(&tree, range, code));
+    }
 
-        let tree = store.parse_document_with_cache(&uri, code_with_sync).await;
-        if tree.is_none() {
-            return Err("парс должен вернуть дерево".into());
+    #[test]
+    fn test_has_synchronization_in_block_none() {
+        let code = r#"
+func example() {
+    {
+        x = 2
+    }
+}
+        "#;
+        let tree = parse_go(code);
+        let range = Range::new(Position::new(2, 16), Position::new(2, 16));
+        assert!(!has_synchronization_in_block(&tree, range, code));
+    }
+
+    #[test]
+    fn test_has_synchronization_in_block_atomic() {
+        let code = r#"
+func inc() {
+    atomic.AddInt32(&counter, 1)
+}
+        "#;
+        let tree = parse_go(code);
+        let range = Range::new(Position::new(2, 12), Position::new(2, 12));
+        assert!(has_synchronization_in_block(&tree, range, code));
+    }
+
+    #[test]
+    fn test_determine_race_severity() {
+        let safe_code = r#"
+func safe() {
+    m.Lock();
+    x++;
+    m.Unlock();
+}
+        "#;
+        let unsafe_code = r#"
+func unsafe() {
+    x = x + 1
+}
+        "#;
+        let tree_safe = parse_go(safe_code);
+        let tree_unsafe = parse_go(unsafe_code);
+        let range_safe = Range::new(Position::new(2, 10), Position::new(2, 10));
+        let range_unsafe = Range::new(Position::new(2, 5), Position::new(2, 5));
+
+        assert_eq!(
+            crate::analysis::determine_race_severity(&tree_safe, range_safe, safe_code),
+            crate::types::RaceSeverity::Low
+        );
+        assert_eq!(
+            crate::analysis::determine_race_severity(&tree_unsafe, range_unsafe, unsafe_code),
+            crate::types::RaceSeverity::High
+        );
+    }
+
+    #[test]
+    fn test_find_variable_at_position() {
+        let code = r#"
+func demo() {
+    var a, b = 1, 2
+    c := a + b
+    _ = c
+}
+        "#;
+        let tree = parse_go(code);
+        use crate::util::node_to_range;
+        let root = tree.root_node();
+        let mut _cursor = root.walk();
+        fn print_identifiers(node: tree_sitter::Node, code: &str) {
+            if node.kind() == "identifier" {
+                eprintln!(
+                    "IDENT: '{}' at {:?}",
+                    &code[node.byte_range()],
+                    node_to_range(node)
+                );
+            }
+            let mut cursor = node.walk();
+            if cursor.goto_first_child() {
+                loop {
+                    print_identifiers(cursor.node(), code);
+                    if !cursor.goto_next_sibling() {
+                        break;
+                    }
+                }
+            }
         }
+        print_identifiers(root, code);
+        // Position at 'a' in expression c := a + b
+        let pos = Position::new(3, 9);
+        let info = crate::analysis::find_variable_at_position(&tree, code, pos)
+            .expect("Variable should be found");
+        eprintln!("USES: {:?}", info.uses);
+        assert_eq!(info.name, "a");
+        assert_eq!(info.declaration.start.line, 0);
+        assert_eq!(info.uses.len(), 1);
+        assert!(!info.is_pointer);
+    }
 
-        let tree = tree.unwrap();
+    #[test]
+    fn test_is_in_goroutine() {
+        let code = r#"
+func run() {
+    go func() {
+        doWork()
+    }()
+}
+        "#;
+        let tree = parse_go(code);
+        // Position inside the goroutine literal
+        let range_inside = Range::new(Position::new(2, 15), Position::new(2, 15));
+        assert!(crate::analysis::is_in_goroutine(&tree, range_inside));
+        // Position outside
+        let range_outside = Range::new(Position::new(1, 5), Position::new(1, 5));
+        assert!(!crate::analysis::is_in_goroutine(&tree, range_outside));
+    }
 
-        // Проверяем, что функция определения приоритета работает
-        let test_range = Range::new(Position::new(8, 8), Position::new(8, 14)); // shared
-        let severity = determine_race_severity(&tree, test_range);
-
-        // В данном случае должно быть Low, так как есть синхронизация
-        match severity {
-            RaceSeverity::Low => Ok(()),
-            _ => Err("приоритет должен быть Low при наличии синхронизации".into()),
-        }
+    #[test]
+    fn test_count_entities() {
+        let code = r#"
+var global int
+func f() {}
+func main() {
+    go doSomething()
+    ch := make(chan int)
+    x := 10
+}
+        "#;
+        let tree = parse_go(code);
+        let counts = crate::analysis::count_entities(&tree, code);
+        assert_eq!(counts.variables, 3);
+        assert_eq!(counts.functions, 2);
+        assert_eq!(counts.goroutines, 1);
+        assert_eq!(counts.channels, 1);
     }
 }

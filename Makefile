@@ -1,48 +1,72 @@
-# Makefile для сборки и упаковки Go Analyzer
+# Go-Analyzer-RS
 
-# Основные директории
-ROOT_DIR := C:\repository\go-analyzer-rs
-VSCODE_DIR := $(ROOT_DIR)\vscode
-SERVER_SRC := $(ROOT_DIR)\target\release\go-analyzer-rs.exe
-SERVER_DEST := $(VSCODE_DIR)\server\go-analyzer-rs.exe
+all:
+	@echo "Use  make build-windows  or  make build-linux"
 
-# Цель по умолчанию: собрать и упаковать всё
-all: clean build copy npm compile package
+# WINDOWS
+build-windows: win-clean win-build win-copy npm compile package
+	@echo "INFO: Full Windows build complete"
 
-# Очистка Rust проекта
-clean:
-	@echo "Cleaning Rust project..."
-	@cd $(ROOT_DIR) && cargo clean
+win-clean:
+	@cargo clean
+	@echo "INFO: Cleaning Rust project (Windows)"
+	@del /f /q "vscode\\server\\go-analyzer-rs.exe"
+	@echo "INFO: go-analyzer-rs.exe delete "vscode\server\go-analyzer-rs.exe""
+	@del /f /q "vscode\\go-analyzer-0.0.1.vsix"
+	@echo "INFO: go-analyzer-0.0.1.vsix delete "vscode\\go-analyzer-0.0.1.vsix""
 
-# Сборка Rust сервера
-build:
-	@echo "Building Rust server..."
-	@cd $(ROOT_DIR) && cargo build --release
 
-# Копирование бинарника в папку vscode\server
-copy:
-	@echo "Copying server binary..."
-	@echo "Checking folder: $(VSCODE_DIR)\server"
-	@if not exist "$(VSCODE_DIR)\server" (echo Creating folder && mkdir "$(VSCODE_DIR)\server") else (echo Folder exists)
-	@echo "Copying from $(SERVER_SRC) to $(SERVER_DEST)"
-	@copy $(SERVER_SRC) $(SERVER_DEST)
+win-build:
+	@echo "INFO: Building Rust server for Windows"
+	@cargo build --release
 
-# Установка Node.js зависимостей
+win-copy:
+	@echo "INFO: Copying server binary file"
+	@if not exist "vscode\\server" mkdir "vscode\\server"
+	@copy /Y "target\\release\\go-analyzer-rs.exe" "vscode\\server\\go-analyzer-rs.exe"
+	
+	
+
+# LINUX
+build-linux: unix-clean unix-build unix-copy npm compile package
+	@echo "INFO: Full Linux build complete"
+
+unix-clean:
+	@echo "INFO: Cleaning Rust project (Linux)"
+	@cargo clean
+
+unix-build:
+	@echo "INFO: Building Rust server for Linux"
+	@cargo build --release
+
+unix-copy:
+	@echo "INFO: Copying Linux binary"
+	@mkdir -p vscode/server
+	@cp target/release/go-analyzer-rs vscode/server/go-analyzer-rs
+
+# Node / VS Code
 npm:
-	@echo "Installing Node.js dependencies..."
-	@cd $(VSCODE_DIR) && npm install
+	@cd vscode && npm install
+	@echo "INFO: Installing Node.js dependencies"
 
-# Компиляция TypeScript клиента
 compile:
-	@echo "Compiling TypeScript client..."
-	@cd $(VSCODE_DIR) && npm run compile
+	@cd vscode && npm run compile
+	@echo "INFO: Compiling TypeScript client"
 
-# Упаковка VS Code расширения
 package:
-	@echo "Packaging VS Code extension..."
-	@cd $(VSCODE_DIR) && vsce package
+	@cd vscode && vsce package
+	@echo "INFO: Packaging VS Code extension"
 
-# Очистка и полная пересборка
-rebuild: clean all
+# «build»
+ifeq ($(OS),Windows_NT)
+build: build-windows
+else
+build: build-linux
+endif
 
-.PHONY: all clean build copy npm compile package rebuild
+# PHONY
+.PHONY: \
+	all build build-windows build-linux \
+	win-clean win-build win-copy \
+	unix-clean unix-build unix-copy \
+	npm compile package

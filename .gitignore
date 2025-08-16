@@ -4,3 +4,6 @@ out
 server
 go-analyzer-0.0.1.vsix
 target
+.idea
+.vscode/launch.json
+.vscode/settings.json

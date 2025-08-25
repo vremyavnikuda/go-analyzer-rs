@@ -2,32 +2,67 @@
 
 [README_RU](README_RU.md)
 
-A Go code analyzer written in Rust with VS Code support that shows variable lifecycles and warns about potential data races.
+**Production-ready Go code analyzer** - Go code analyzer in Rust with VS Code support, providing intelligent variable lifecycle tracking and advanced data race detection.
+
+✅ **[25.08.2025](https://github.com/vremyavnikuda/go-analyzer-rs/commit/d24b2cb42eb70ef22012726f390137cd8b0b26a9)**: Stable, crash-resistant LSP server with enhanced analysis capabilities
 
 ## Features
 
-- **Variable lifecycle analysis**: When selecting a variable anywhere in the code, shows its complete lifecycle
-- **Real-time automatic analysis**: Analysis runs automatically when moving the cursor
-- **Pointer detection**: Automatically detects pointer usage
-- **Data race detection**: Warns about potential data races in goroutines
-- **Color-coded visualization**:
-  - 🟢 **Green**: Variable declaration
+### **Enhanced Variable Analysis**
+
+- **Support for all Go constructs**: Variables, struct fields, interface methods, function parameters
+- **Advanced scope determination**: Function level, loop variables, type switch, range clause
+- **Intelligent cursor positioning**: Context-dependent detection with 15+ specialized contexts
+- **Automatic real-time analysis**: Analysis with delay and configurable settings (300ms by default)
+
+### **Stabilized**
+
+- **Crash-resistant LSP server**: Comprehensive panic recovery and error handling
+- **Memory-safe operations**: Proper asynchronous resource management and cleanup
+- **Graceful degradation**: Safe fallbacks when analysis errors occur
+- **Optimized performance**: Incremental parsing with AST caching
+
+### **Stabilized: race detection**
+
+- **Context-dependent severity levels**: Race detection with High/Medium/Low priority
+- **Synchronization awareness**: Detects mutex locks and atomic operations
+- **Smart goroutine analysis**: Multiple goroutine patterns (anonymous functions, method calls)
+- **Variable access analysis**: Read/Write/Modify/Address-taking operation detection
+
+### **Enhanced Visualization**
+
+- **Color analysis**:
+  - 🟢 **Green**: Variable declarations
   - 🟡 **Yellow**: Regular variable usage
-  - 🔵 **Blue**: Pointer usage
-  - 🔴 **Red**: Potential data race in goroutine
+  - 🔵 **Blue**: Pointer operations (`&var`, `*ptr`)
+  - 🔴 **Red**: High-priority data races in goroutines
+  - 🟠 **Orange**: Low-priority races (synchronized contexts)
+- **Rich hover information**: Detailed variable lifecycle and race warnings
+- **Intelligent highlighting**: Context-sensitive highlighting based on cursor position
 
 ## Installation
+
+> **Note**: The LSP server is thoroughly tested and includes comprehensive error handling to ensure stability during analysis.
 
 ### Quick Start (Recommended)
 
 Use the provided Makefile for easy building and packaging:
 
 ```bash
-# Build everything and package the extension
-make all
+# Build everything and package extension (Windows)
+make build-windows
 
-# Or step by step:
-make clean    # Clean previous builds
+# Build everything and package extension (Linux/macOS)
+make build-linux
+
+# Test the build
+cargo test
+```
+
+#### Step-by-step build:
+
+```bash
+make clean    # Clean previous builds (win-clean or unix-clean)
 make build    # Build Rust server
 make copy     # Copy server to extension folder
 make npm      # Install Node.js dependencies
@@ -43,7 +78,7 @@ make package  # Package VS Code extension
 cargo build --release
 ```
 
-#### Building the VS Code extension
+#### Building VS Code extension
 
 ```bash
 cd vscode
@@ -56,13 +91,13 @@ npm run compile
 After building the Rust server, copy the binary to the extension folder:
 
 ```bash
-# Create server directory if it doesn't exist
+# Create server folder if it doesn't exist
 mkdir -p vscode/server
 
-# Copy the binary (Windows)
+# Copy binary (Windows)
 copy target\release\go-analyzer-rs.exe vscode\server\
 
-# Copy the binary (Linux/macOS)
+# Copy binary (Linux/macOS)
 cp target/release/go-analyzer-rs vscode/server/
 ```
 
@@ -80,19 +115,21 @@ cd vscode && npm run watch
 
 ## Usage
 
-### Automatic analysis (default)
+### Automatic Analysis (default)
+
 1. Open a Go file in VS Code
 2. Install the extension (if not already installed)
 3. Simply move the cursor over variables - analysis will start automatically
-4. See color-coded visualization of the complete variable lifecycle
+4. You'll see color indication of the entire variable lifecycle
 
-### Manual analysis
+### Manual Analysis
+
 1. Select a variable in the code
-2. Execute the command `Go Analyzer: Show Lifecycle` (Ctrl+Shift+P → "Go Analyzer: Show Lifecycle")
+2. Execute command `Go Analyzer: Show Lifecycle` (Ctrl+Shift+P → "Go Analyzer: Show Lifecycle")
 
 ## Configuration
 
-In VS Code settings, you can configure:
+In VS Code settings you can configure:
 
 - `goAnalyzer.enableAutoAnalysis` - enable/disable automatic analysis (default: true)
 - `goAnalyzer.autoAnalysisDelay` - delay before automatic analysis in milliseconds (default: 300)
@@ -117,10 +154,73 @@ func main() {
 
 ## Technical Details
 
-- **Server**: Rust using tree-sitter for Go parsing
+### Architecture
+
+- **Server**: Rust LSP server with Go parsing via tree-sitter
 - **Client**: TypeScript extension for VS Code
-- **Protocol**: Language Server Protocol (LSP)
-- **Performance**: Automatic analysis with delay to avoid frequent requests
+- **Protocol**: Language Server Protocol (LSP) via tower-lsp
+- **Runtime**: Tokio async runtime for performance
+- **Parsing**: Incremental AST parsing with caching
+
+### Enhanced Features (25.08.2025)
+
+- **Advanced Go construct support**: 10+ variable declaration patterns
+- **Smart cursor detection**: 15+ context types for precise analysis
+- **Robust error handling**: Panic recovery with graceful degradation
+- **Safe multithreading**: Proper async mutex management
+- **Context-dependent race detection**: Severity levels based on synchronization
+
+### Performance Features
+
+- **Delayed analysis**: Configurable delay (300ms default) prevents overload
+- **Smart caching**: Reuse of parsed AST trees for efficiency
+- **Incremental parsing**: Re-analysis of only changed parts
+- **Resource cleanup**: Proper removal of decorations and event handlers
+
+### Supported Go Patterns
+
+- Variable declarations: `var x int`, `x := value`
+- Function parameters and return values
+- Struct field access: `obj.field`
+- Interface method calls: `interface.method()`
+- Range clauses: `for i, v := range slice`
+- Type switches: `switch v := x.(type)`
+- Goroutine analysis: `go func(){}()`, `go method()`
+- Pointer operations: `&var`, `*ptr`
+
+## Quality Assurance
+
+### Testing
+
+The project includes comprehensive unit tests covering all analysis functions:
+
+```bash
+# Run all tests
+cargo test
+
+# Run specific test
+cargo test test_enhanced_cursor_position_detection
+
+# Check compilation errors
+cargo check
+```
+
+**Test Coverage**:
+
+- ✅ Variable detection accuracy
+- ✅ Cursor position detection
+- ✅ Goroutine analysis
+- ✅ Synchronization detection
+- ✅ Race severity determination
+- ✅ Entity counting
+- ✅ Enhanced cursor context analysis
+
+### Stability Features
+
+- **Panic recovery**: All analysis functions include `catch_unwind` protection
+- **Resource management**: Proper async mutex handling and cleanup
+- **Error logging**: Comprehensive error reporting for debugging
+- **Graceful degradation**: Safe fallbacks when analysis issues occur
 
 ## Development
 
@@ -156,60 +256,66 @@ make compile
 
 #### Manual Development Setup
 
-1. Build the server: `cargo build`
-2. Copy the binary: `copy target\debug\go-analyzer-rs.exe vscode\server\` (Windows) or `cp target/debug/go-analyzer-rs vscode/server/` (Linux/macOS)
-3. Build the extension: `cd vscode && npm run compile`
-4. Launch VS Code in debug mode (F5)
-5. Open the test Go file and test the functionality
+1. Build server: `cargo build`
+2. Copy binary: `copy target\debug\go-analyzer-rs.exe vscode\server\` (Windows) or `cp target/debug/go-analyzer-rs vscode/server/` (Linux/macOS)
+3. Build extension: `cd vscode && npm run compile`
+4. Run VS Code in debug mode (F5)
+5. Open test Go file and test functionality
 
 ## How It Works
 
 ### Variable Lifecycle Analysis
+
 The analyzer uses tree-sitter to parse Go code and build an Abstract Syntax Tree (AST). When a variable is selected (either in declaration or usage), the system:
 
-1. **Finds the variable declaration** in the current scope
+1. **Finds variable declaration** in the current scope
 2. **Collects all usages** throughout the function
-3. **Detects pointer operations** (address-of `&`, dereference `*`)
-4. **Identifies goroutine usage** for data race detection
-5. **Applies color-coded decorations** to visualize the lifecycle
+3. **Detects pointer operations** (address-taking `&`, dereferencing `*`)
+4. **Identifies usage in goroutines** for data race detection
+5. **Applies color decorations** to visualize the lifecycle
 
 ### Real-time Analysis
+
 - **Cursor tracking**: Monitors cursor position changes in Go files
-- **Debounced requests**: Uses configurable delay to prevent excessive server requests
-- **Smart updates**: Only analyzes when cursor position actually changes
-- **Resource management**: Properly cleans up decorations and timeouts
+- **Delayed queries**: Uses configurable delay to prevent excessive server requests
+- **Smart updates**: Analysis only on actual cursor position changes
+- **Resource management**: Proper cleanup of decorations and timeouts
 
 ### Data Race Detection
-The analyzer detects potential data races by:
-1. **Identifying goroutines**: Finding `go` statements in the code
+
+The analyzer detects potential data races through:
+
+1. **Goroutine identification**: Finding `go` statements in code
 2. **Variable usage in goroutines**: Checking if variables are used inside goroutines
 3. **Scope analysis**: Determining if variables are shared between goroutines
-4. **Visual warnings**: Marking such usages with red color
+4. **Visual warnings**: Marking such usage with red color
 
 ## Performance Considerations
 
-- **Efficient parsing**: Uses tree-sitter for fast, incremental parsing
-- **Debounced analysis**: Configurable delay prevents excessive CPU usage
+- **Efficient parsing**: Uses tree-sitter for fast incremental parsing
+- **Delayed analysis**: Configurable delay prevents excessive CPU usage
 - **Smart caching**: Reuses parsed AST when possible
-- **Resource cleanup**: Proper disposal of decorations and event listeners
+- **Resource cleanup**: Proper removal of decorations and event handlers
 
 ## Troubleshooting
 
 ### Common Issues
 
-1. **No decorations appear**:
-   - Check if the file has `.go` extension
-   - Ensure the LSP server is running
+1. **Decorations not appearing**:
+
+   - Check that file has `.go` extension
+   - Ensure LSP server is running
    - Check VS Code console for errors
 
 2. **Slow performance**:
+
    - Increase `autoAnalysisDelay` in settings
    - Disable automatic analysis if not needed
    - Check for large files or complex code
 
 3. **Incorrect analysis**:
    - Ensure Go syntax is correct
-   - Check for parsing errors in the console
+   - Check for parsing errors in console
    - Verify tree-sitter grammar compatibility
 
 ## Contributing
@@ -217,9 +323,9 @@ The analyzer detects potential data races by:
 1. Fork the repository
 2. Create a feature branch
 3. Make your changes
-4. Add tests if applicable
+4. Add tests if necessary
 5. Submit a pull request
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details. 
+This project is licensed under the MIT License - see the LICENSE file for details.

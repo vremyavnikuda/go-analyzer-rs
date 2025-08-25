@@ -731,6 +731,7 @@ fn find_goroutine_context(
 }
 
 /// Enhanced function to detect different types of goroutine patterns
+#[allow(dead_code)]
 pub fn analyze_goroutine_usage(tree: &Tree, var_name: &str, code: &str) -> Vec<GoroutineUsage> {
     let mut usages = Vec::new();
 
@@ -761,6 +762,7 @@ pub fn analyze_goroutine_usage(tree: &Tree, var_name: &str, code: &str) -> Vec<G
 }
 
 /// Analyze how a variable is used within a specific goroutine
+#[allow(dead_code)]
 fn analyze_variable_in_goroutine(
     goroutine_node: tree_sitter::Node,
     var_name: &str,
@@ -812,7 +814,8 @@ fn analyze_variable_in_goroutine(
 }
 
 /// Classify the type of goroutine (anonymous function, function call, etc.)
-fn classify_goroutine_type(goroutine_node: tree_sitter::Node, code: &str) -> GoroutineType {
+#[allow(dead_code)]
+fn classify_goroutine_type(goroutine_node: tree_sitter::Node, _code: &str) -> GoroutineType {
     // Look for the expression being executed in the go statement
     for i in 0..goroutine_node.child_count() {
         if let Some(child) = goroutine_node.child(i) {
@@ -837,6 +840,7 @@ fn classify_goroutine_type(goroutine_node: tree_sitter::Node, code: &str) -> Gor
 }
 
 /// Determine the type of variable access (read, write, address-of, etc.)
+#[allow(dead_code)]
 fn determine_access_type(node: tree_sitter::Node, code: &str) -> VariableAccessType {
     if let Some(parent) = node.parent() {
         match parent.kind() {
@@ -874,7 +878,8 @@ fn determine_access_type(node: tree_sitter::Node, code: &str) -> VariableAccessT
 }
 
 /// Get context information about the variable access
-fn get_access_context(node: tree_sitter::Node, code: &str) -> String {
+#[allow(dead_code)]
+fn get_access_context(node: tree_sitter::Node, _code: &str) -> String {
     if let Some(parent) = node.parent() {
         match parent.kind() {
             "call_expression" => "function call".to_string(),
@@ -891,6 +896,7 @@ fn get_access_context(node: tree_sitter::Node, code: &str) -> String {
 }
 
 /// Calculate race severity based on access patterns
+#[allow(dead_code)]
 fn calculate_race_severity(usage: &GoroutineUsage, code: &str) -> RaceSeverity {
     let has_writes = usage.variable_accesses.iter().any(|access| {
         matches!(
@@ -924,13 +930,15 @@ fn calculate_race_severity(usage: &GoroutineUsage, code: &str) -> RaceSeverity {
 }
 
 /// Helper function to check if synchronization exists in a range
-fn has_synchronization_in_range(range: Range, code: &str) -> bool {
+#[allow(dead_code)]
+fn has_synchronization_in_range(_range: Range, code: &str) -> bool {
     // This is a simplified version - in a full implementation,
     // you would parse the tree again and check for mutex/atomic operations
     code.contains("Lock") || code.contains("Unlock") || code.contains("atomic.")
 }
 
 /// Helper function to check if a node contains a position
+#[allow(dead_code)]
 fn node_contains_position(node: tree_sitter::Node, position: Point) -> bool {
     node.start_position() <= position && position <= node.end_position()
 }

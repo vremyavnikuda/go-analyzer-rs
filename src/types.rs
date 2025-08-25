@@ -106,6 +106,7 @@ pub struct VarId {
 /// Статус изменяемости переменной.
 /// Показывает, может ли переменная быть изменена, была ли она переопределена,
 /// взят ли у неё адрес или захвачена ли она в замыкании/горутине.
+#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Mutability {
     /// Переменная неизменяема (например, объявлена как let x = ...)
@@ -119,6 +120,7 @@ pub enum Mutability {
 }
 
 /// Information about goroutine usage of a variable
+#[allow(dead_code)]
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct GoroutineUsage {
     /// Range of the goroutine statement
@@ -132,6 +134,7 @@ pub struct GoroutineUsage {
 }
 
 /// Type of goroutine construct
+#[allow(dead_code)]
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub enum GoroutineType {
     /// go func() { ... }()
@@ -145,6 +148,7 @@ pub enum GoroutineType {
 }
 
 /// Information about a variable access within a goroutine
+#[allow(dead_code)]
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct VariableAccess {
     /// Location of the access
@@ -156,6 +160,7 @@ pub struct VariableAccess {
 }
 
 /// Type of variable access
+#[allow(dead_code)]
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub enum VariableAccessType {
     /// Reading the variable value

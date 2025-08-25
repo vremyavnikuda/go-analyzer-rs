@@ -1,6 +1,6 @@
 use crate::analysis::{
-    build_graph_data, count_entities, determine_race_severity, find_node_at_cursor_with_context,
-    find_variable_at_position, find_variable_at_position_enhanced, is_in_goroutine,
+    build_graph_data, count_entities, determine_race_severity, find_variable_at_position,
+    find_variable_at_position_enhanced, is_in_goroutine,
 };
 use crate::types::{Decoration, DecorationType, ProgressNotification, RaceSeverity};
 use serde::{Deserialize, Serialize};

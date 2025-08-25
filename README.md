@@ -328,4 +328,8 @@ The analyzer detects potential data races through:
 
 ## License
 
+<<<<<<< HEAD
 This project is licensed under the MIT License - see the LICENSE file for details.
+=======
+This project is licensed under the MIT License - see the LICENSE file for details.
+>>>>>>> f2ed354cbb6e6155331a9ce417d85668e1444944

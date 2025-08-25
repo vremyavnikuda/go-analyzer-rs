@@ -1,10 +1,8 @@
 // tests.rs
 // Unit tests for synchronization and AST analysis utilities
-use super::*;
-use tower_lsp::lsp_types::Position;
 use tree_sitter::Parser;
 
-fn parse_go(code: &str) -> tree_sitter::Tree {
+pub fn parse_go(code: &str) -> tree_sitter::Tree {
     let mut parser = Parser::new();
     parser
         .set_language(tree_sitter_go::language())
@@ -130,7 +128,7 @@ func demo() {
             .expect("Variable should be found");
         eprintln!("USES: {:?}", info.uses);
         assert_eq!(info.name, "a");
-        assert_eq!(info.declaration.start.line, 0);
+        assert_eq!(info.declaration.start.line, 2); // Variable 'a' is declared on line 2 (var a, b = 1, 2)
         assert_eq!(info.uses.len(), 1);
         assert!(!info.is_pointer);
     }
@@ -170,5 +168,49 @@ func main() {
         assert_eq!(counts.functions, 2);
         assert_eq!(counts.goroutines, 1);
         assert_eq!(counts.channels, 1);
+    }
+
+    #[test]
+    fn test_enhanced_cursor_position_detection() {
+        let code = r#"
+func example() {
+    var user struct {
+        name string
+        age  int
+    }
+    user.name = "John"
+    go func() {
+        fmt.Println(user.age)
+    }()
+}
+        "#;
+        let tree = parse_go(code);
+
+        // Test cursor on struct field access (user.name)
+        let pos_field_access = Position::new(6, 9); // Position on "name" in "user.name"
+        let context = crate::analysis::find_node_at_cursor_with_context(&tree, pos_field_access);
+        assert!(context.is_some());
+        let context = context.unwrap();
+        assert_eq!(
+            context.context_type,
+            crate::types::CursorContextType::FieldAccess
+        );
+
+        // Test cursor on variable in goroutine
+        let pos_goroutine = Position::new(8, 23); // Position on "user" in goroutine
+        let var_info =
+            crate::analysis::find_variable_at_position_enhanced(&tree, code, pos_goroutine);
+        assert!(var_info.is_some());
+        let var_info = var_info.unwrap();
+        assert_eq!(var_info.name, "user");
+
+        // Test enhanced detection on struct declaration
+        let pos_declaration = Position::new(2, 8); // Position on "user" in declaration
+        let var_info_decl =
+            crate::analysis::find_variable_at_position_enhanced(&tree, code, pos_declaration);
+        assert!(var_info_decl.is_some());
+        let var_info_decl = var_info_decl.unwrap();
+        assert_eq!(var_info_decl.name, "user");
+        assert!(var_info_decl.uses.len() >= 2); // Should find multiple uses
     }
 }

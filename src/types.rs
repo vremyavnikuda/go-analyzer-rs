@@ -118,6 +118,114 @@ pub enum Mutability {
     Captured,
 }
 
+/// Information about goroutine usage of a variable
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct GoroutineUsage {
+    /// Range of the goroutine statement
+    pub goroutine_range: Range,
+    /// All variable accesses within this goroutine
+    pub variable_accesses: Vec<VariableAccess>,
+    /// Type of goroutine (function call, anonymous function, etc.)
+    pub goroutine_type: GoroutineType,
+    /// Calculated race severity level
+    pub potential_race_level: RaceSeverity,
+}
+
+/// Type of goroutine construct
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub enum GoroutineType {
+    /// go func() { ... }()
+    AnonymousFunction,
+    /// go myFunction()
+    FunctionCall,
+    /// go obj.method()
+    MethodCall,
+    /// Unknown or complex pattern
+    Unknown,
+}
+
+/// Information about a variable access within a goroutine
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct VariableAccess {
+    /// Location of the access
+    pub range: Range,
+    /// Type of access (read, write, etc.)
+    pub access_type: VariableAccessType,
+    /// Context description
+    pub context: String,
+}
+
+/// Type of variable access
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub enum VariableAccessType {
+    /// Reading the variable value
+    Read,
+    /// Writing to the variable
+    Write,
+    /// Modifying the variable (++, --, +=, etc.)
+    Modify,
+    /// Taking address of variable (&var)
+    AddressOf,
+    /// Dereferencing variable (*var)
+    Dereference,
+}
+
+/// Context information about cursor position
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct CursorContext {
+    /// The node at the cursor position
+    pub target_node_kind: String,
+    /// The cursor position
+    pub position: Range,
+    /// Type of context
+    pub context_type: CursorContextType,
+    /// Parent context type (if available)
+    pub parent_context: Option<CursorContextType>,
+    /// Additional context information
+    pub details: Option<String>,
+}
+
+/// Types of contexts where cursor can be positioned
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub enum CursorContextType {
+    /// Cursor is on a variable declaration
+    VariableDeclaration,
+    /// Cursor is on a parameter declaration
+    ParameterDeclaration,
+    /// Cursor is on a variable usage
+    VariableUse,
+    /// Cursor is on a struct field access (obj.field)
+    FieldAccess,
+    /// Cursor is on the object part of field access
+    ObjectAccess,
+    /// Cursor is on a struct field definition
+    StructField,
+    /// Cursor is on a function name (declaration)
+    FunctionName,
+    /// Cursor is on a function declaration
+    FunctionDeclaration,
+    /// Cursor is on a function call
+    FunctionCall,
+    /// Cursor is on an assignment statement
+    Assignment,
+    /// Cursor is in a goroutine context
+    GoroutineContext,
+    /// Cursor is on a go statement
+    GoroutineStatement,
+    /// Cursor is on a type reference
+    TypeReference,
+    /// Cursor is on a package reference
+    PackageReference,
+    /// Cursor is on a channel type
+    ChannelType,
+    /// Cursor is on an interface type
+    InterfaceType,
+    /// Cursor is on a struct type
+    StructType,
+    /// Unknown or unsupported context
+    Unknown,
+}
+
 pub const ATOMIC_FUNCS: &[&str] = &[
     "AddInt32",
     "AddInt64",

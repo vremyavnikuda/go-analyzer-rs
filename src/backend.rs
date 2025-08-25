@@ -1,8 +1,8 @@
 use crate::analysis::{
-    build_graph_data, count_entities, determine_race_severity, find_variable_at_position,
-    is_in_goroutine,
+    build_graph_data, count_entities, determine_race_severity, find_node_at_cursor_with_context,
+    find_variable_at_position, find_variable_at_position_enhanced, is_in_goroutine,
 };
-use crate::types::{Decoration, DecorationType, GraphData, ProgressNotification};
+use crate::types::{Decoration, DecorationType, ProgressNotification, RaceSeverity};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tokio::sync::Mutex;
@@ -56,18 +56,25 @@ impl Backend {
     pub async fn parse_document_with_cache(&self, uri: &Url, code: &str) -> Option<Tree> {
         let mut parser = self.parser.lock().await;
         let mut trees = self.trees.lock().await;
+
         let prev_tree = trees.get(uri);
+
         // Используем инкрементальный парсинг, если есть предыдущее дерево
-        let new_tree = if let Some(prev) = prev_tree {
+        let new_tree = match if let Some(prev) = prev_tree {
             parser.parse(code, Some(prev))
         } else {
             parser.parse(code, None)
+        } {
+            Some(tree) => tree,
+            None => {
+                eprintln!("Failed to parse document: {}", uri);
+                return None;
+            }
         };
-        // Кэшируем новое дерево, если оно успешно построено
-        if let Some(ref tree) = new_tree {
-            trees.insert(uri.clone(), tree.clone());
-        }
-        new_tree
+
+        // Кэшируем новое дерево
+        trees.insert(uri.clone(), new_tree.clone());
+        Some(new_tree)
     }
 
     /// Получить дерево из кэша (если оно есть)
@@ -79,20 +86,34 @@ impl Backend {
     /// Отправить клиенту статус индексации (количество сущностей в файле)
     pub async fn send_indexing_status(&self, uri: &Url) {
         let docs = self.documents.lock().await;
+
         if let Some(code) = docs.get(uri) {
-            let tree = self.parse_document_with_cache(uri, code).await;
-            if let Some(tree) = tree {
-                let counts = count_entities(&tree, code);
-                let params = IndexingStatusParams {
-                    variables: counts.variables,
-                    functions: counts.functions,
-                    channels: counts.channels,
-                    goroutines: counts.goroutines,
-                };
-                self.client
-                    .send_notification::<IndexingStatusNotification>(params)
-                    .await;
-            }
+            let tree = match self.parse_document_with_cache(uri, code).await {
+                Some(tree) => tree,
+                None => {
+                    eprintln!("Failed to parse document for indexing status: {}", uri);
+                    return;
+                }
+            };
+
+            let counts = match std::panic::catch_unwind(|| count_entities(&tree, code)) {
+                Ok(counts) => counts,
+                Err(e) => {
+                    eprintln!("Panic occurred while counting entities: {:?}", e);
+                    return;
+                }
+            };
+
+            let params = IndexingStatusParams {
+                variables: counts.variables,
+                functions: counts.functions,
+                channels: counts.channels,
+                goroutines: counts.goroutines,
+            };
+
+            self.client
+                .send_notification::<IndexingStatusNotification>(params)
+                .await;
         }
     }
 }
@@ -168,52 +189,66 @@ impl LanguageServer for Backend {
     async fn hover(&self, params: HoverParams) -> tower_lsp::jsonrpc::Result<Option<Hover>> {
         let uri = params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
+
         let docs = self.documents.lock().await;
+
         let code = match docs.get(&uri) {
             Some(text) => text,
             None => {
                 return Ok(None);
             }
         };
+
         // Получаем дерево из кэша или парсим заново, если его нет
-        let tree = self.get_tree_from_cache(&uri).await.or_else(|| {
-            // Если нет в кэше, парсим и кэшируем
-            futures::executor::block_on(self.parse_document_with_cache(&uri, code))
-        });
-        let tree = match tree {
+        let tree = match self.get_tree_from_cache(&uri).await {
             Some(tree) => tree,
-            None => {
+            None => match self.parse_document_with_cache(&uri, code).await {
+                Some(tree) => tree,
+                None => {
+                    eprintln!("Failed to parse document for hover: {}", uri);
+                    return Ok(None);
+                }
+            },
+        };
+
+        // Ищем переменную под курсором с улучшенным определением позиции
+        let var_info = match std::panic::catch_unwind(|| {
+            // Try enhanced detection first, fallback to standard
+            find_variable_at_position_enhanced(&tree, code, position)
+                .or_else(|| find_variable_at_position(&tree, code, position))
+        }) {
+            Ok(Some(var_info)) => var_info,
+            Ok(None) => return Ok(None),
+            Err(e) => {
+                eprintln!("Panic occurred in find_variable_at_position: {:?}", e);
                 return Ok(None);
             }
         };
 
-        // Ищем переменную под курсором
-        if let Some(var_info) = find_variable_at_position(&tree, code, position) {
-            let mut markdown = format!(
-                "**Variable**: `{}`\n\n**Declared at**: line {}\n**Type**: {}\n**Uses**: {}\n",
-                var_info.name,
-                var_info.declaration.start.line + 1,
-                if var_info.is_pointer {
-                    "Pointer"
-                } else {
-                    "Value"
-                },
-                var_info.uses.len()
-            );
-            // Если есть потенциальная гонка данных — добавляем предупреждение
-            if var_info.potential_race {
-                markdown.push_str("**Warning**: Potential data race detected!\n");
-            }
-            Ok(Some(Hover {
-                contents: HoverContents::Markup(MarkupContent {
-                    kind: MarkupKind::Markdown,
-                    value: markdown,
-                }),
-                range: Some(var_info.declaration),
-            }))
-        } else {
-            Ok(None)
+        let mut markdown = format!(
+            "**Variable**: `{}`\n\n**Declared at**: line {}\n**Type**: {}\n**Uses**: {}\n",
+            var_info.name,
+            var_info.declaration.start.line + 1,
+            if var_info.is_pointer {
+                "Pointer"
+            } else {
+                "Value"
+            },
+            var_info.uses.len()
+        );
+
+        // Если есть потенциальная гонка данных — добавляем предупреждение
+        if var_info.potential_race {
+            markdown.push_str("**Warning**: Potential data race detected!\n");
         }
+
+        Ok(Some(Hover {
+            contents: HoverContents::Markup(MarkupContent {
+                kind: MarkupKind::Markdown,
+                value: markdown,
+            }),
+            range: Some(var_info.declaration),
+        }))
     }
 
     // Обработка команды goanalyzer/cursor: анализ переменной под курсором и отправка декораций
@@ -228,14 +263,37 @@ impl LanguageServer for Backend {
             self.client
                 .send_notification::<ProgressNotification>("Starting analysis...".to_string())
                 .await;
+
             // Десериализуем параметры команды (позиция курсора)
+            if params.arguments.is_empty() {
+                self.client
+                    .send_notification::<ProgressNotification>("No arguments provided".to_string())
+                    .await;
+                return Ok(None);
+            }
+
             let args: TextDocumentPositionParams =
-                serde_json::from_value(params.arguments[0].clone()).map_err(|e| {
-                    tower_lsp::jsonrpc::Error::invalid_params(format!("Invalid arguments: {}", e))
-                })?;
+                match serde_json::from_value(params.arguments[0].clone()) {
+                    Ok(args) => args,
+                    Err(e) => {
+                        eprintln!("Failed to deserialize arguments: {}", e);
+                        self.client
+                            .send_notification::<ProgressNotification>(
+                                "Invalid arguments".to_string(),
+                            )
+                            .await;
+                        return Err(tower_lsp::jsonrpc::Error::invalid_params(format!(
+                            "Invalid arguments: {}",
+                            e
+                        )));
+                    }
+                };
+
             let uri = args.text_document.uri;
             let position = args.position;
+
             let docs = self.documents.lock().await;
+
             let code = match docs.get(&uri) {
                 Some(text) => text,
                 None => {
@@ -245,94 +303,142 @@ impl LanguageServer for Backend {
                     return Ok(None);
                 }
             };
+
             // Получаем дерево из кэша или парсим заново
-            let tree = self.get_tree_from_cache(&uri).await.or_else(|| {
-                futures::executor::block_on(self.parse_document_with_cache(&uri, code))
-            });
-            let tree = match tree {
+            let tree = match self.get_tree_from_cache(&uri).await {
                 Some(tree) => tree,
-                None => {
+                None => match self.parse_document_with_cache(&uri, code).await {
+                    Some(tree) => tree,
+                    None => {
+                        self.client
+                            .send_notification::<ProgressNotification>(
+                                "Failed to parse document".to_string(),
+                            )
+                            .await;
+                        return Ok(None);
+                    }
+                },
+            };
+
+            // Ищем переменную под курсором с улучшенным определением позиции
+            let mut var_info = match std::panic::catch_unwind(|| {
+                // First try the enhanced detection
+                find_variable_at_position_enhanced(&tree, code, position).or_else(|| {
+                    // Fallback to standard detection
+                    find_variable_at_position(&tree, code, position)
+                })
+            }) {
+                Ok(Some(var_info)) => var_info,
+                Ok(None) => {
                     self.client
-                        .send_notification::<ProgressNotification>(
-                            "Failed to parse document".to_string(),
-                        )
+                        .send_notification::<ProgressNotification>("No variable found".to_string())
+                        .await;
+                    return Ok(None);
+                }
+                Err(e) => {
+                    eprintln!("Panic occurred in find_variable_at_position: {:?}", e);
+                    self.client
+                        .send_notification::<ProgressNotification>("Analysis error".to_string())
                         .await;
                     return Ok(None);
                 }
             };
 
-            // Ищем переменную под курсором
-            if let Some(mut var_info) = find_variable_at_position(&tree, code, position) {
-                let mut decorations = vec![];
-                // Декорация для объявления переменной
-                decorations.push(Decoration {
-                    range: var_info.declaration,
-                    kind: DecorationType::Declaration,
-                    hover_text: format!("Declaration of `{}`", var_info.name),
-                });
+            let mut decorations = vec![];
 
-                // Декорации для всех использований переменной
-                for use_range in var_info.uses.iter() {
-                    // По умолчанию: обычное использование или указатель
-                    let mut decoration_kind = if var_info.is_pointer {
-                        DecorationType::Pointer
-                    } else {
-                        DecorationType::Use
+            // Декорация для объявления переменной
+            decorations.push(Decoration {
+                range: var_info.declaration,
+                kind: DecorationType::Declaration,
+                hover_text: format!("Declaration of `{}`", var_info.name),
+            });
+
+            // Декорации для всех использований переменной
+            for use_range in var_info.uses.iter() {
+                // По умолчанию: обычное использование или указатель
+                let mut decoration_kind = if var_info.is_pointer {
+                    DecorationType::Pointer
+                } else {
+                    DecorationType::Use
+                };
+
+                let mut hover_text = format!("Use of `{}`", var_info.name);
+
+                // Если использование внутри горутины — определяем приоритет гонки
+                let is_in_goroutine_result =
+                    match std::panic::catch_unwind(|| is_in_goroutine(&tree, *use_range)) {
+                        Ok(result) => result,
+                        Err(e) => {
+                            eprintln!("Panic occurred in is_in_goroutine: {:?}", e);
+                            false // Safe fallback
+                        }
                     };
 
-                    let mut hover_text = format!("Use of `{}`", var_info.name);
-
-                    // Если использование внутри горутины — определяем приоритет гонки
-                    if is_in_goroutine(&tree, *use_range) {
-                        // Определяем приоритет гонки на основе контекста
-                        let race_severity = determine_race_severity(&tree, *use_range, &code);
-                        var_info.race_severity = race_severity.clone();
-
-                        match race_severity {
-                            crate::types::RaceSeverity::High => {
-                                decoration_kind = DecorationType::Race;
-                                hover_text = format!(
-                                    "Use of `{}` in goroutine - HIGH PRIORITY data race!",
-                                    var_info.name
-                                );
-                            }
-                            crate::types::RaceSeverity::Medium => {
-                                decoration_kind = DecorationType::Race;
-                                hover_text = format!(
-                                    "Use of `{}` in goroutine - potential data race",
-                                    var_info.name
-                                );
-                            }
-                            crate::types::RaceSeverity::Low => {
-                                decoration_kind = DecorationType::RaceLow;
-                                hover_text = format!(
-                                    "Use of `{}` in goroutine - LOW PRIORITY (sync detected)",
-                                    var_info.name
-                                );
-                            }
+                if is_in_goroutine_result {
+                    // Определяем приоритет гонки на основе контекста
+                    let race_severity = match std::panic::catch_unwind(|| {
+                        determine_race_severity(&tree, *use_range, &code)
+                    }) {
+                        Ok(severity) => severity,
+                        Err(e) => {
+                            eprintln!("Panic occurred in determine_race_severity: {:?}", e);
+                            RaceSeverity::Medium // Safe fallback
                         }
-                        var_info.potential_race = true;
-                    }
+                    };
 
-                    decorations.push(Decoration {
-                        range: *use_range,
-                        kind: decoration_kind,
-                        hover_text,
-                    });
+                    var_info.race_severity = race_severity.clone();
+
+                    match race_severity {
+                        crate::types::RaceSeverity::High => {
+                            decoration_kind = DecorationType::Race;
+                            hover_text = format!(
+                                "Use of `{}` in goroutine - HIGH PRIORITY data race!",
+                                var_info.name
+                            );
+                        }
+                        crate::types::RaceSeverity::Medium => {
+                            decoration_kind = DecorationType::Race;
+                            hover_text = format!(
+                                "Use of `{}` in goroutine - potential data race",
+                                var_info.name
+                            );
+                        }
+                        crate::types::RaceSeverity::Low => {
+                            decoration_kind = DecorationType::RaceLow;
+                            hover_text = format!(
+                                "Use of `{}` in goroutine - LOW PRIORITY (sync detected)",
+                                var_info.name
+                            );
+                        }
+                    }
+                    var_info.potential_race = true;
                 }
 
-                // Сериализуем декорации и отправляем клиенту
-                let value = serde_json::to_value(&decorations)
-                    .map_err(|_| tower_lsp::jsonrpc::Error::internal_error())?;
-                self.client
-                    .send_notification::<ProgressNotification>("Analysis complete".to_string())
-                    .await;
-                return Ok(Some(value));
+                decorations.push(Decoration {
+                    range: *use_range,
+                    kind: decoration_kind,
+                    hover_text,
+                });
             }
-            // Если переменная не найдена — отправляем уведомление
+
+            // Сериализуем декорации и отправляем клиенту
+            let value = match serde_json::to_value(&decorations) {
+                Ok(value) => value,
+                Err(e) => {
+                    eprintln!("Failed to serialize decorations: {}", e);
+                    self.client
+                        .send_notification::<ProgressNotification>(
+                            "Serialization error".to_string(),
+                        )
+                        .await;
+                    return Err(tower_lsp::jsonrpc::Error::internal_error());
+                }
+            };
+
             self.client
-                .send_notification::<ProgressNotification>("No variable found".to_string())
+                .send_notification::<ProgressNotification>("Analysis complete".to_string())
                 .await;
+            return Ok(Some(value));
         }
         // Новый метод: goanalyzer/graph
         else if params.command == "goanalyzer/graph" {

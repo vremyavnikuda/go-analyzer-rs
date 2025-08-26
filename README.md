@@ -31,12 +31,15 @@
 
 ### **Enhanced Visualization**
 
+- **Extension Control**: Quick activation/deactivation with keyboard shortcuts (Shift+Alt+S/C) and visual status indicators
 - **Color analysis**:
   - 🟢 **Green**: Variable declarations
   - 🟡 **Yellow**: Regular variable usage
   - 🔵 **Blue**: Pointer operations (`&var`, `*ptr`)
   - 🔴 **Red**: High-priority data races in goroutines
   - 🟠 **Orange**: Low-priority races (synchronized contexts)
+  - 🟣 **Purple**: Reassigned alias variables
+  - 🟪 **Magenta**: Captured variables in closures
 - **Rich hover information**: Detailed variable lifecycle and race warnings
 - **Intelligent highlighting**: Context-sensitive highlighting based on cursor position
 
@@ -115,12 +118,27 @@ cd vscode && npm run watch
 
 ## Usage
 
-### Automatic Analysis (default)
+### Extension Activation Control
+
+**Keyboard Shortcuts**:
+
+- **Shift+Alt+S**: Activate the extension (enable analysis)
+- **Shift+Alt+C**: Deactivate the extension (disable analysis)
+
+**Visual Status Indicator**: The status bar shows the current extension state:
+
+- ✅ **Active**: Extension is running and analyzing code
+- ❌ **Inactive**: Extension is disabled to save resources
+
+> **Note**: The extension doesn't always need to be active. Use deactivation when you want to save system resources or focus on other tasks.
+
+### Automatic Analysis (when active)
 
 1. Open a Go file in VS Code
 2. Install the extension (if not already installed)
-3. Simply move the cursor over variables - analysis will start automatically
-4. You'll see color indication of the entire variable lifecycle
+3. Ensure the extension is active (✅ in status bar or use Shift+Alt+S)
+4. Simply move the cursor over variables - analysis will start automatically
+5. You'll see color indication of the entire variable lifecycle
 
 ### Manual Analysis
 
@@ -137,6 +155,9 @@ In VS Code settings you can configure:
 - `goAnalyzer.useColor` - color for variable usage (default: "yellow")
 - `goAnalyzer.pointerColor` - color for pointer operations (default: "blue")
 - `goAnalyzer.raceColor` - color for data race warnings (default: "red")
+- `goAnalyzer.raceLowColor` - color for low-priority race warnings (default: "orange")
+- `goAnalyzer.aliasReassignedColor` - color for reassigned alias variables (default: "purple")
+- `goAnalyzer.aliasCapturedColor` - color for captured alias variables (default: "magenta")
 
 ## Example
 
@@ -144,10 +165,11 @@ In VS Code settings you can configure:
 func main() {
     x := 42          // 🟢 Declaration
     println(x)       // 🟡 Usage
+    x = 100          // 🟣 Reassignment
     ptr := &x        // 🟡 Usage of x, 🟢 Declaration of ptr
     println(*ptr)    // 🔵 Pointer usage
     go func() {
-        println(x)   // 🔴 Data race!
+        println(x)   // 🟪 Captured variable in goroutine
     }()
 }
 ```
@@ -332,4 +354,5 @@ The analyzer detects potential data races through:
 This project is licensed under the MIT License - see the LICENSE file for details.
 =======
 This project is licensed under the MIT License - see the LICENSE file for details.
->>>>>>> f2ed354cbb6e6155331a9ce417d85668e1444944
+
+> > > > > > > f2ed354cbb6e6155331a9ce417d85668e1444944

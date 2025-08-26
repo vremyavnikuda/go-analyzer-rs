@@ -11,9 +11,6 @@ import {
 import * as path from "path";
 import * as fs from "fs";
 
-/* ────────────────────────────────────────────────────────────────────────── */
-/*  Выбор бинарника                                                          */
-/* ────────────────────────────────────────────────────────────────────────── */
 function resolveServerPath(ctx: vscode.ExtensionContext): string {
     const env = process.env.GO_ANALYZER_PATH;
     if (env && fs.existsSync(env)) return env;
@@ -37,10 +34,8 @@ function resolveServerPath(ctx: vscode.ExtensionContext): string {
     );
 }
 
-/* ────────────────────────────────────────────────────────────────────────── */
-/*  Глобальное состояние                                                     */
-/* ────────────────────────────────────────────────────────────────────────── */
 let client: LanguageClient | undefined;
+let extensionActive = true; // Track extension active state
 
 const lastStatus = {
     variables: 0,
@@ -51,11 +46,12 @@ const lastStatus = {
 
 interface Decoration {
     range: vscode.Range;
-    kind: "Declaration" | "Use" | "Pointer" | "Race" | "RaceLow";
-    hoverMessage: string;
+    kind: "Declaration" | "Use" | "Pointer" | "Race" | "RaceLow" | "AliasReassigned" | "AliasCaptured";
+    // Changed from hoverMessage to match server
+    hover_text: string;
 }
 
-const ProgressNotification = new NotificationType<{ message: string }>(
+const ProgressNotification = new NotificationType<string>(
     "goanalyzer/progress",
 );
 const IndexingStatusNotification = new NotificationType<{
@@ -65,11 +61,7 @@ const IndexingStatusNotification = new NotificationType<{
     goroutines: number;
 }>("goanalyzer/indexingStatus");
 
-/* ────────────────────────────────────────────────────────────────────────── */
-/*  Активация                                                                */
-/* ────────────────────────────────────────────────────────────────────────── */
 export function activate(context: vscode.ExtensionContext) {
-    /* -------- запуск сервера -------- */
     const serverModule = resolveServerPath(context);
     console.log(`Launching Go-Analyzer server: ${serverModule}`);
 
@@ -91,17 +83,24 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.StatusBarAlignment.Right,
         100,
     );
-    statusBar.text = "Go Analyzer";
 
-    const updateTooltip = () => {
-        statusBar.tooltip = [
+    const updateStatusBar = () => {
+        statusBar.text = extensionActive ? "Go Analyzer ✅" : "Go Analyzer ❌";
+        statusBar.tooltip = extensionActive
+            ? `Active - Analysis enabled\n${getStatusTooltip()}`
+            : `Inactive - Analysis disabled\n${getStatusTooltip()}`;
+    };
+
+    const getStatusTooltip = () => {
+        return [
             `Переменные: ${lastStatus.variables}`,
             `Функции: ${lastStatus.functions}`,
             `Каналы: ${lastStatus.channels}`,
             `Горутины: ${lastStatus.goroutines}`,
         ].join("\n");
     };
-    updateTooltip();
+
+    updateStatusBar();
     statusBar.show();
     context.subscriptions.push(statusBar);
 
@@ -111,11 +110,11 @@ export function activate(context: vscode.ExtensionContext) {
         lastStatus.functions = p.functions;
         lastStatus.channels = p.channels;
         lastStatus.goroutines = p.goroutines;
-        updateTooltip();
+        updateStatusBar();
     });
 
-    client.onNotification(ProgressNotification, p => {
-        vscode.window.showInformationMessage(p.message);
+    client.onNotification(ProgressNotification, message => {
+        vscode.window.showInformationMessage(message);
     });
 
     /* -------- типы декораций -------- */
@@ -153,12 +152,29 @@ export function activate(context: vscode.ExtensionContext) {
             overviewRulerColor: vscode.workspace.getConfiguration("goAnalyzer").get("raceLowColor", "orange"),
             overviewRulerLane: vscode.OverviewRulerLane.Right,
         }),
+        AliasReassigned: vscode.window.createTextEditorDecorationType({
+            textDecoration: "underline",
+            color: cfg("aliasReassignedColor", "purple"),
+            overviewRulerColor: cfg("aliasReassignedColor", "purple"),
+            overviewRulerLane: vscode.OverviewRulerLane.Right,
+        }),
+        AliasCaptured: vscode.window.createTextEditorDecorationType({
+            textDecoration: "underline",
+            color: cfg("aliasCapturedColor", "magenta"),
+            overviewRulerColor: cfg("aliasCapturedColor", "magenta"),
+            overviewRulerLane: vscode.OverviewRulerLane.Right,
+        }),
     };
 
     /* -------- команда showLifecycle -------- */
     const lifecycleCmd = vscode.commands.registerCommand(
         "goanalyzer.showLifecycle",
         async () => {
+            if (!extensionActive) {
+                vscode.window.showWarningMessage("Go Analyzer is deactivated. Use Shift+Alt+S to activate.");
+                return;
+            }
+
             const editor = vscode.window.activeTextEditor;
             if (!editor || editor.document.languageId !== "go") {
                 vscode.window.showErrorMessage("No Go editor is active.");
@@ -198,13 +214,15 @@ export function activate(context: vscode.ExtensionContext) {
                                 Pointer: [],
                                 Race: [],
                                 RaceLow: [],
+                                AliasReassigned: [],
+                                AliasCaptured: [],
                             };
                             for (const d of resp) {
                                 const range = new vscode.Range(
                                     new vscode.Position(d.range.start.line, d.range.start.character),
                                     new vscode.Position(d.range.end.line, d.range.end.character),
                                 );
-                                byType[d.kind].push({ range, hoverMessage: d.hoverMessage });
+                                byType[d.kind].push({ range, hoverMessage: d.hover_text });
                             }
                             for (const [k, decos] of Object.entries(byType)) {
                                 editor.setDecorations(decorationTypes[k as keyof typeof decorationTypes], decos);
@@ -222,6 +240,34 @@ export function activate(context: vscode.ExtensionContext) {
     );
     context.subscriptions.push(lifecycleCmd);
 
+    /* -------- команды активации/деактивации -------- */
+    const activateCmd = vscode.commands.registerCommand(
+        "goanalyzer.activate",
+        () => {
+            extensionActive = true;
+            updateStatusBar();
+            vscode.window.showInformationMessage("Go Analyzer: Extension activated (Расширение активировано)");
+        }
+    );
+    context.subscriptions.push(activateCmd);
+
+    const deactivateCmd = vscode.commands.registerCommand(
+        "goanalyzer.deactivate",
+        () => {
+            extensionActive = false;
+            updateStatusBar();
+            // Clear any existing decorations
+            const editor = vscode.window.activeTextEditor;
+            if (editor && editor.document.languageId === "go") {
+                for (const key in decorationTypes) {
+                    editor.setDecorations(decorationTypes[key as keyof typeof decorationTypes], []);
+                }
+            }
+            vscode.window.showInformationMessage("Go Analyzer: Extension deactivated (Расширение деактивировано)");
+        }
+    );
+    context.subscriptions.push(deactivateCmd);
+
     /* -------- авто-анализ курсора -------- */
     let cursorDisp: vscode.Disposable | undefined;
     let lastPos: vscode.Position | undefined;
@@ -233,6 +279,9 @@ export function activate(context: vscode.ExtensionContext) {
         cursorDisp = vscode.window.onDidChangeTextEditorSelection(evt => {
             const editor = evt.textEditor;
             if (editor.document.languageId !== "go") return;
+
+            // Check if extension is active
+            if (!extensionActive) return;
 
             const enable = vscode.workspace.getConfiguration("goAnalyzer")
                 .get<boolean>("enableAutoAnalysis", true);
@@ -269,13 +318,15 @@ export function activate(context: vscode.ExtensionContext) {
                             Pointer: [],
                             Race: [],
                             RaceLow: [],
+                            AliasReassigned: [],
+                            AliasCaptured: [],
                         };
                         for (const d of resp) {
                             const range = new vscode.Range(
                                 new vscode.Position(d.range.start.line, d.range.start.character),
                                 new vscode.Position(d.range.end.line, d.range.end.character),
                             );
-                            byType[d.kind].push({ range, hoverMessage: d.hoverMessage });
+                            byType[d.kind].push({ range, hoverMessage: d.hover_text });
                         }
                         for (const [k, decos] of Object.entries(byType)) {
                             editor.setDecorations(decorationTypes[k as keyof typeof decorationTypes], decos);
@@ -311,8 +362,8 @@ export function activate(context: vscode.ExtensionContext) {
                 }
                 return null;
             } catch (err) {
-                vscode.window.showErrorMessage(`Hover error: ${err}`);
-                console.error(err);
+                console.error("Hover provider error:", err);
+                // Don't show error messages for hover failures as they're too frequent
                 return null;
             }
         },
@@ -322,6 +373,11 @@ export function activate(context: vscode.ExtensionContext) {
     const showGraphCmd = vscode.commands.registerCommand(
         "goanalyzer.showGraph",
         async () => {
+            if (!extensionActive) {
+                vscode.window.showWarningMessage("Go Analyzer is deactivated. Use Shift+Alt+S to activate.");
+                return;
+            }
+
             const editor = vscode.window.activeTextEditor;
             if (!editor || editor.document.languageId !== "go") {
                 vscode.window.showErrorMessage("No Go editor is active.");
@@ -558,9 +614,6 @@ export function activate(context: vscode.ExtensionContext) {
         });
 }
 
-/* ────────────────────────────────────────────────────────────────────────── */
-/*  Деактивация                                                              */
-/* ────────────────────────────────────────────────────────────────────────── */
 export function deactivate(): Thenable<void> | undefined {
     return client?.stop();
 }

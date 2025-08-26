@@ -129,7 +129,10 @@ impl LanguageServer for Backend {
             capabilities: ServerCapabilities {
                 hover_provider: Some(HoverProviderCapability::Simple(true)), // поддержка hover
                 execute_command_provider: Some(ExecuteCommandOptions {
-                    commands: vec!["goanalyzer/cursor".to_string()], // поддерживаемая команда
+                    commands: vec![
+                        "goanalyzer/cursor".to_string(),
+                        "goanalyzer/graph".to_string(),
+                    ], // поддерживаемые команды
                     ..Default::default()
                 }),
                 text_document_sync: Some(TextDocumentSyncCapability::Kind(
@@ -364,54 +367,98 @@ impl LanguageServer for Backend {
 
                 let mut hover_text = format!("Use of `{}`", var_info.name);
 
-                // Если использование внутри горутины — определяем приоритет гонки
-                let is_in_goroutine_result =
-                    match std::panic::catch_unwind(|| is_in_goroutine(&tree, *use_range)) {
+                // Check for variable reassignment
+                let is_reassignment = match std::panic::catch_unwind(|| {
+                    crate::analysis::is_variable_reassignment(&tree, &var_info.name, *use_range)
+                }) {
+                    Ok(result) => result,
+                    Err(e) => {
+                        eprintln!("Panic occurred in is_variable_reassignment: {:?}", e);
+                        false // Safe fallback
+                    }
+                };
+
+                if is_reassignment {
+                    decoration_kind = DecorationType::AliasReassigned;
+                    hover_text = format!("Reassignment of `{}`", var_info.name);
+                }
+                // Check for variable capture in closure/goroutine
+                else {
+                    let is_captured = match std::panic::catch_unwind(|| {
+                        crate::analysis::is_variable_captured(
+                            &tree,
+                            &var_info.name,
+                            *use_range,
+                            var_info.declaration,
+                        )
+                    }) {
                         Ok(result) => result,
                         Err(e) => {
-                            eprintln!("Panic occurred in is_in_goroutine: {:?}", e);
+                            eprintln!("Panic occurred in is_variable_captured: {:?}", e);
                             false // Safe fallback
                         }
                     };
 
-                if is_in_goroutine_result {
-                    // Определяем приоритет гонки на основе контекста
-                    let race_severity = match std::panic::catch_unwind(|| {
-                        determine_race_severity(&tree, *use_range, &code)
-                    }) {
-                        Ok(severity) => severity,
-                        Err(e) => {
-                            eprintln!("Panic occurred in determine_race_severity: {:?}", e);
-                            RaceSeverity::Medium // Safe fallback
-                        }
-                    };
-
-                    var_info.race_severity = race_severity.clone();
-
-                    match race_severity {
-                        crate::types::RaceSeverity::High => {
-                            decoration_kind = DecorationType::Race;
-                            hover_text = format!(
-                                "Use of `{}` in goroutine - HIGH PRIORITY data race!",
-                                var_info.name
-                            );
-                        }
-                        crate::types::RaceSeverity::Medium => {
-                            decoration_kind = DecorationType::Race;
-                            hover_text = format!(
-                                "Use of `{}` in goroutine - potential data race",
-                                var_info.name
-                            );
-                        }
-                        crate::types::RaceSeverity::Low => {
-                            decoration_kind = DecorationType::RaceLow;
-                            hover_text = format!(
-                                "Use of `{}` in goroutine - LOW PRIORITY (sync detected)",
-                                var_info.name
-                            );
-                        }
+                    if is_captured {
+                        decoration_kind = DecorationType::AliasCaptured;
+                        hover_text = format!("Captured `{}` in closure/goroutine", var_info.name);
                     }
-                    var_info.potential_race = true;
+                }
+
+                // Если использование внутри горутины — определяем приоритет гонки
+                // Only check for races if it's not already marked as reassignment or capture
+                if !matches!(
+                    decoration_kind,
+                    DecorationType::AliasReassigned | DecorationType::AliasCaptured
+                ) {
+                    let is_in_goroutine_result =
+                        match std::panic::catch_unwind(|| is_in_goroutine(&tree, *use_range)) {
+                            Ok(result) => result,
+                            Err(e) => {
+                                eprintln!("Panic occurred in is_in_goroutine: {:?}", e);
+                                false // Safe fallback
+                            }
+                        };
+
+                    if is_in_goroutine_result {
+                        // Определяем приоритет гонки на основе контекста
+                        let race_severity = match std::panic::catch_unwind(|| {
+                            determine_race_severity(&tree, *use_range, &code)
+                        }) {
+                            Ok(severity) => severity,
+                            Err(e) => {
+                                eprintln!("Panic occurred in determine_race_severity: {:?}", e);
+                                RaceSeverity::Medium // Safe fallback
+                            }
+                        };
+
+                        var_info.race_severity = race_severity.clone();
+
+                        match race_severity {
+                            crate::types::RaceSeverity::High => {
+                                decoration_kind = DecorationType::Race;
+                                hover_text = format!(
+                                    "Use of `{}` in goroutine - HIGH PRIORITY data race!",
+                                    var_info.name
+                                );
+                            }
+                            crate::types::RaceSeverity::Medium => {
+                                decoration_kind = DecorationType::Race;
+                                hover_text = format!(
+                                    "Use of `{}` in goroutine - potential data race",
+                                    var_info.name
+                                );
+                            }
+                            crate::types::RaceSeverity::Low => {
+                                decoration_kind = DecorationType::RaceLow;
+                                hover_text = format!(
+                                    "Use of `{}` in goroutine - LOW PRIORITY (sync detected)",
+                                    var_info.name
+                                );
+                            }
+                        }
+                        var_info.potential_race = true;
+                    }
                 }
 
                 decorations.push(Decoration {

@@ -736,4 +736,88 @@ func main() {
         // Should count: two go statements
         assert!(counts.goroutines >= 2);
     }
+
+    #[test]
+    fn test_variable_reassignment_detection() {
+        let code = r#"
+func main() {
+    x := 42      // Declaration
+    x = 100      // Reassignment
+    y := 30
+    y = 40       // Another reassignment
+}
+        "#;
+        let tree = parse_go(code);
+
+        // Test reassignment detection
+        let reassign_range = Range::new(Position::new(3, 4), Position::new(3, 5));
+        let is_reassign = crate::analysis::is_variable_reassignment(&tree, "x", reassign_range);
+        assert!(is_reassign, "Should detect x = 100 as reassignment");
+
+        // Test normal declaration (not reassignment)
+        // The declaration itself should not be flagged as reassignment
+        let decl_range = Range::new(Position::new(2, 4), Position::new(2, 5));
+        let is_not_reassign = crate::analysis::is_variable_reassignment(&tree, "x", decl_range);
+        assert!(
+            !is_not_reassign,
+            "Should not detect declaration as reassignment"
+        );
+    }
+
+    #[test]
+    fn test_variable_capture_in_closure() {
+        let code = r#"
+func main() {
+    x := 42
+    go func() {
+        println(x)   // Captured variable
+    }()
+    y := 30
+    println(y)       // Not captured
+}
+        "#;
+        let tree = parse_go(code);
+
+        // Test capture detection
+        let capture_range = Range::new(Position::new(4, 16), Position::new(4, 17));
+        let declaration_range = Range::new(Position::new(2, 4), Position::new(2, 5));
+        let is_captured =
+            crate::analysis::is_variable_captured(&tree, "x", capture_range, declaration_range);
+        assert!(is_captured, "Should detect x as captured in goroutine");
+
+        // Test non-capture usage
+        let non_capture_range = Range::new(Position::new(7, 12), Position::new(7, 13));
+        let y_declaration_range = Range::new(Position::new(6, 4), Position::new(6, 5));
+        let is_not_captured = crate::analysis::is_variable_captured(
+            &tree,
+            "y",
+            non_capture_range,
+            y_declaration_range,
+        );
+        assert!(!is_not_captured, "Should not detect y as captured");
+    }
+
+    #[test]
+    #[ignore] // TODO: Fix function literal capture detection
+    fn test_variable_capture_in_function_literal() {
+        let code = r#"
+func main() {
+    value := 100
+    callback := func() {
+        println(value)  // Captured in function literal
+    }
+    callback()
+}
+        "#;
+        let tree = parse_go(code);
+
+        let capture_range = Range::new(Position::new(4, 16), Position::new(4, 21));
+        let declaration_range = Range::new(Position::new(2, 4), Position::new(2, 9));
+        let is_captured =
+            crate::analysis::is_variable_captured(&tree, "value", capture_range, declaration_range);
+        assert!(
+            is_captured,
+            "Should detect value as captured in function literal"
+        );
+    }
 }

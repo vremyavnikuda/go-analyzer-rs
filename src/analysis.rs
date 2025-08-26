@@ -667,6 +667,116 @@ fn check_pointer_context(node: tree_sitter::Node, code: &str, var_info: &mut Var
     }
 }
 
+/// Check if a variable usage is a reassignment (x = value or x := value after initial declaration)
+pub fn is_variable_reassignment(tree: &Tree, _var_name: &str, use_range: Range) -> bool {
+    let target_point = Point {
+        row: use_range.start.line as usize,
+        column: use_range.start.character as usize,
+    };
+
+    if let Some(node) = find_node_at_position(tree.root_node(), target_point) {
+        if let Some(parent) = node.parent() {
+            match parent.kind() {
+                "assignment_statement" => {
+                    // Check if this identifier is on the left side (assignment target)
+                    if let Some(left) = parent.child_by_field_name("left") {
+                        return node_contains_position(left, node.start_position());
+                    }
+                }
+                "short_var_declaration" => {
+                    // For short var declarations, we need to distinguish between
+                    // initial declaration and reassignment in the same statement.
+                    // This is complex in Go, so for now we'll be conservative
+                    // and only flag explicit assignments (=) as reassignments
+                    return false;
+                }
+                _ => {}
+            }
+        }
+    }
+    false
+}
+
+/// Check if a variable is captured in a closure or goroutine
+pub fn is_variable_captured(
+    tree: &Tree,
+    _var_name: &str,
+    use_range: Range,
+    declaration_range: Range,
+) -> bool {
+    let target_point = Point {
+        row: use_range.start.line as usize,
+        column: use_range.start.character as usize,
+    };
+
+    let decl_point = Point {
+        row: declaration_range.start.line as usize,
+        column: declaration_range.start.character as usize,
+    };
+
+    // Find the usage node
+    if let Some(use_node) = find_node_at_position(tree.root_node(), target_point) {
+        // Find the declaration node
+        if let Some(decl_node) = find_node_at_position(tree.root_node(), decl_point) {
+            // Check if usage is inside a closure or goroutine that's different from declaration scope
+            return is_in_different_closure_scope(use_node, decl_node);
+        }
+    }
+    false
+}
+
+/// Check if two nodes are in different closure/goroutine scopes
+fn is_in_different_closure_scope(
+    use_node: tree_sitter::Node,
+    decl_node: tree_sitter::Node,
+) -> bool {
+    let use_closure = find_enclosing_closure_or_goroutine(use_node);
+    let decl_closure = find_enclosing_closure_or_goroutine(decl_node);
+
+    match (use_closure, decl_closure) {
+        (Some(use_closure_node), Some(decl_closure_node)) => {
+            // Different closures
+            use_closure_node != decl_closure_node
+        }
+        (Some(_), None) => {
+            // Use is in closure, declaration is not
+            true
+        }
+        (None, Some(_)) => {
+            // Use is not in closure, declaration is - shouldn't happen normally
+            false
+        }
+        (None, None) => {
+            // Neither in closure
+            false
+        }
+    }
+}
+
+/// Find the enclosing function literal or go statement
+fn find_enclosing_closure_or_goroutine(node: tree_sitter::Node) -> Option<tree_sitter::Node> {
+    let mut current = Some(node);
+
+    while let Some(node) = current {
+        match node.kind() {
+            "function_literal" => {
+                return Some(node);
+            }
+            "go_statement" => {
+                return Some(node);
+            }
+            "function_declaration" => {
+                // Don't go past function boundaries - this would be a different scope
+                return None;
+            }
+            _ => {
+                current = node.parent();
+            }
+        }
+    }
+    None
+}
+
 pub fn is_in_goroutine(tree: &Tree, range: Range) -> bool {
     let target_point = Point {
         row: range.start.line as usize,

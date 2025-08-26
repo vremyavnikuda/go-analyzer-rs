@@ -37,6 +37,49 @@ function resolveServerPath(ctx: vscode.ExtensionContext): string {
 let client: LanguageClient | undefined;
 let extensionActive = true; // Track extension active state
 
+// Глобальное управление обработчиками событий
+let disposables: vscode.Disposable[] = [];
+let cursorDisp: vscode.Disposable | undefined;
+let lastPos: vscode.Position | undefined;
+let timeoutHandle: NodeJS.Timeout | undefined;
+
+// Функция для очистки всех обработчиков событий
+function cleanupEventHandlers() {
+    console.log(`Cleaning up ${disposables.length} event handlers`);
+    disposables.forEach(d => {
+        try {
+            d.dispose();
+        } catch (error) {
+            console.error("Error disposing event handler:", error);
+        }
+    });
+    disposables = [];
+
+    // Очистка обработчика курсора
+    if (cursorDisp) {
+        try {
+            cursorDisp.dispose();
+        } catch (error) {
+            console.error("Error disposing cursor handler:", error);
+        }
+        cursorDisp = undefined;
+    }
+
+    // Очистка таймеров
+    if (timeoutHandle) {
+        clearTimeout(timeoutHandle);
+        timeoutHandle = undefined;
+    }
+
+    lastPos = undefined;
+}
+
+// Функция для добавления обработчика в список
+function addDisposable(disposable: vscode.Disposable) {
+    disposables.push(disposable);
+    return disposable;
+}
+
 const lastStatus = {
     variables: 0,
     functions: 0,
@@ -62,6 +105,10 @@ const IndexingStatusNotification = new NotificationType<{
 }>("goanalyzer/indexingStatus");
 
 export function activate(context: vscode.ExtensionContext) {
+    /* -------- очистка при старте -------- */
+    // Очищаем старые обработчики при повторной активации
+    cleanupEventHandlers();
+
     const serverModule = resolveServerPath(context);
     console.log(`Launching Go-Analyzer server: ${serverModule}`);
 
@@ -405,16 +452,17 @@ export function activate(context: vscode.ExtensionContext) {
     };
 
     startCursorTracking();
-    if (cursorDisp) context.subscriptions.push(cursorDisp);
 
-    context.subscriptions.push(
-        vscode.window.onDidChangeActiveTextEditor(ed => {
-            if (ed && ed.document.languageId === "go") startCursorTracking();
-        }),
-    );
+    // Добавляем обработчик смены активного редактора
+    const editorChangeDisposable = vscode.window.onDidChangeActiveTextEditor(ed => {
+        if (ed && ed.document.languageId === "go") {
+            startCursorTracking();
+        }
+    });
+    addDisposable(editorChangeDisposable);
 
     /* -------- hover provider -------- */
-    vscode.languages.registerHoverProvider("go", {
+    const hoverProvider = vscode.languages.registerHoverProvider("go", {
         async provideHover(doc, pos, token) {
             try {
                 const resp: any = await client!.sendRequest(
@@ -428,11 +476,11 @@ export function activate(context: vscode.ExtensionContext) {
                 return null;
             } catch (err) {
                 console.error("Hover provider error:", err);
-                // Don't show error messages for hover failures as they're too frequent
                 return null;
             }
         },
     });
+    addDisposable(hoverProvider);
 
     /* -------- команда showGraph -------- */
     const showGraphCmd = vscode.commands.registerCommand(
@@ -668,11 +716,15 @@ export function activate(context: vscode.ExtensionContext) {
             panel.webview.html = html;
         }
     );
-    context.subscriptions.push(showGraphCmd);
+    addDisposable(showGraphCmd);
 
     /* -------- запуск клиента -------- */
     client.start()
-        .then(() => vscode.window.showInformationMessage("Go Analyzer started"))
+        .then(() => {
+            vscode.window.showInformationMessage("Go Analyzer started");
+            // Добавляем все disposables в context.subscriptions
+            disposables.forEach(d => context.subscriptions.push(d));
+        })
         .catch(err => {
             vscode.window.showErrorMessage(`Failed to start Go Analyzer: ${err}`);
             console.error(err);
@@ -680,5 +732,20 @@ export function activate(context: vscode.ExtensionContext) {
 }
 
 export function deactivate(): Thenable<void> | undefined {
-    return client?.stop();
+    console.log("Extension deactivation started");
+
+    // Очищаем все обработчики событий
+    cleanupEventHandlers();
+
+    // Останавливаем LSP клиент
+    if (client) {
+        console.log("Stopping LSP client during deactivation");
+        return client.stop().then(() => {
+            console.log("LSP client stopped successfully");
+        }).catch(error => {
+            console.error("Error stopping LSP client:", error);
+        });
+    }
+
+    return undefined;
 }

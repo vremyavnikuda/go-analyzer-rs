@@ -5,6 +5,7 @@ use crate::analysis::{
 use crate::types::{Decoration, DecorationType, ProgressNotification, RaceSeverity};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::time::{Duration, SystemTime};
 use tokio::sync::Mutex;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer};
@@ -22,18 +23,49 @@ impl tower_lsp::lsp_types::notification::Notification for IndexingStatusNotifica
 // Параметры для уведомления о статусе индексации
 #[derive(Serialize, Deserialize)]
 pub struct IndexingStatusParams {
-    pub variables: usize,  // Количество переменных
-    pub functions: usize,  // Количество функций
-    pub channels: usize,   // Количество каналов
-    pub goroutines: usize, // Количество горутин
+    // Количество переменных
+    pub variables: usize,
+    // Количество функций
+    pub functions: usize,
+    // Количество каналов
+    pub channels: usize,
+    // Количество горутин
+    pub goroutines: usize,
+}
+
+// Константы для управления кэшами
+const MAX_CACHED_TREES: usize = 20;
+const MAX_CACHED_DOCUMENTS: usize = 50;
+// 5 минут
+const CACHE_TTL_SECONDS: u64 = 300;
+
+// Структура для элемента кэша с TTL
+#[derive(Clone)]
+pub struct CacheEntry<T> {
+    data: T,
+    timestamp: SystemTime,
+}
+
+impl<T> CacheEntry<T> {
+    fn new(data: T) -> Self {
+        Self {
+            data,
+            timestamp: SystemTime::now(),
+        }
+    }
+
+    fn is_expired(&self) -> bool {
+        self.timestamp.elapsed().unwrap_or(Duration::from_secs(0))
+            > Duration::from_secs(CACHE_TTL_SECONDS)
+    }
 }
 
 // Основная структура Backend, реализующая сервер LSP
 pub struct Backend {
     pub client: Client, // Клиент LSP для отправки уведомлений и сообщений
-    pub documents: Mutex<HashMap<Url, String>>, // Кэш открытых документов (URI -> текст)
+    pub documents: Mutex<HashMap<Url, CacheEntry<String>>>, // Кэш открытых документов с TTL
     pub parser: Mutex<Parser>, // Парсер tree-sitter для Go
-    pub trees: Mutex<HashMap<Url, Tree>>, // Кэш синтаксических деревьев (URI -> дерево)
+    pub trees: Mutex<HashMap<Url, CacheEntry<Tree>>>, // Кэш синтаксических деревьев с TTL
 }
 
 impl Backend {
@@ -52,12 +84,66 @@ impl Backend {
         }
     }
 
+    /// Очистить истекшие элементы из кэша
+    async fn cleanup_expired_cache(&self) {
+        // Очистка кэша документов
+        {
+            let mut docs = self.documents.lock().await;
+            docs.retain(|_, entry| !entry.is_expired());
+        }
+
+        // Очистка кэша деревьев
+        {
+            let mut trees = self.trees.lock().await;
+            trees.retain(|_, entry| !entry.is_expired());
+        }
+    }
+
+    /// Принудительно ограничить размер кэша по LRU принципу
+    async fn enforce_cache_limits(&self) {
+        // Ограничение размера кэша документов
+        {
+            let mut docs = self.documents.lock().await;
+            if docs.len() > MAX_CACHED_DOCUMENTS {
+                // Простая LRU: удаляем самые старые элементы
+                let mut entries: Vec<_> =
+                    docs.iter().map(|(k, v)| (k.clone(), v.timestamp)).collect();
+                entries.sort_by_key(|(_, timestamp)| *timestamp);
+
+                let to_remove = entries.len() - MAX_CACHED_DOCUMENTS;
+                for (uri, _) in entries.into_iter().take(to_remove) {
+                    docs.remove(&uri);
+                }
+            }
+        }
+
+        // Ограничение размера кэша деревьев
+        {
+            let mut trees = self.trees.lock().await;
+            if trees.len() > MAX_CACHED_TREES {
+                let mut entries: Vec<_> = trees
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.timestamp))
+                    .collect();
+                entries.sort_by_key(|(_, timestamp)| *timestamp);
+
+                let to_remove = entries.len() - MAX_CACHED_TREES;
+                for (uri, _) in entries.into_iter().take(to_remove) {
+                    trees.remove(&uri);
+                }
+            }
+        }
+    }
+
     /// Получить или обновить дерево для документа (с кэшированием)
     pub async fn parse_document_with_cache(&self, uri: &Url, code: &str) -> Option<Tree> {
+        // Периодическая очистка истекших элементов
+        self.cleanup_expired_cache().await;
+
         let mut parser = self.parser.lock().await;
         let mut trees = self.trees.lock().await;
 
-        let prev_tree = trees.get(uri);
+        let prev_tree = trees.get(uri).map(|entry| &entry.data);
 
         // Используем инкрементальный парсинг, если есть предыдущее дерево
         let new_tree = match if let Some(prev) = prev_tree {
@@ -72,49 +158,70 @@ impl Backend {
             }
         };
 
-        // Кэшируем новое дерево
-        trees.insert(uri.clone(), new_tree.clone());
+        // Кэшируем новое дерево с TTL
+        trees.insert(uri.clone(), CacheEntry::new(new_tree.clone()));
+        drop(trees);
+        drop(parser);
+
+        // Принудительно ограничиваем размер кэша
+        self.enforce_cache_limits().await;
+
         Some(new_tree)
     }
 
-    /// Получить дерево из кэша (если оно есть)
+    /// Получить дерево из кэша (если оно есть и не истекло)
     pub async fn get_tree_from_cache(&self, uri: &Url) -> Option<Tree> {
         let trees = self.trees.lock().await;
-        trees.get(uri).cloned()
+        if let Some(entry) = trees.get(uri) {
+            if !entry.is_expired() {
+                Some(entry.data.clone())
+            } else {
+                None // Истекший элемент будет удален при следующей очистке
+            }
+        } else {
+            None
+        }
     }
 
     /// Отправить клиенту статус индексации (количество сущностей в файле)
     pub async fn send_indexing_status(&self, uri: &Url) {
-        let docs = self.documents.lock().await;
-
-        if let Some(code) = docs.get(uri) {
-            let tree = match self.parse_document_with_cache(uri, code).await {
-                Some(tree) => tree,
-                None => {
-                    eprintln!("Failed to parse document for indexing status: {}", uri);
+        let code = {
+            let docs = self.documents.lock().await;
+            match docs.get(uri) {
+                Some(entry) if !entry.is_expired() => entry.data.clone(),
+                _ => {
+                    eprintln!("Document cache entry expired or missing for: {}", uri);
                     return;
                 }
-            };
+            }
+        }; // docs lock is released here
 
-            let counts = match std::panic::catch_unwind(|| count_entities(&tree, code)) {
-                Ok(counts) => counts,
-                Err(e) => {
-                    eprintln!("Panic occurred while counting entities: {:?}", e);
-                    return;
-                }
-            };
+        let tree = match self.parse_document_with_cache(uri, &code).await {
+            Some(tree) => tree,
+            None => {
+                eprintln!("Failed to parse document for indexing status: {}", uri);
+                return;
+            }
+        };
 
-            let params = IndexingStatusParams {
-                variables: counts.variables,
-                functions: counts.functions,
-                channels: counts.channels,
-                goroutines: counts.goroutines,
-            };
+        let counts = match std::panic::catch_unwind(|| count_entities(&tree, &code)) {
+            Ok(counts) => counts,
+            Err(e) => {
+                eprintln!("Panic occurred while counting entities: {:?}", e);
+                return;
+            }
+        };
 
-            self.client
-                .send_notification::<IndexingStatusNotification>(params)
-                .await;
-        }
+        let params = IndexingStatusParams {
+            variables: counts.variables,
+            functions: counts.functions,
+            channels: counts.channels,
+            goroutines: counts.goroutines,
+        };
+
+        self.client
+            .send_notification::<IndexingStatusNotification>(params)
+            .await;
     }
 }
 
@@ -156,14 +263,28 @@ impl LanguageServer for Backend {
 
     // Завершение работы сервера - правильная очистка ресурсов
     async fn shutdown(&self) -> tower_lsp::jsonrpc::Result<()> {
-        // Очищаем кэши и освобождаем ресурсы
+        self.client
+            .log_message(MessageType::INFO, "Go Analyzer server shutdown initiated")
+            .await;
+
+        // Очищаем все кэши и освобождаем ресурсы
         {
             let mut docs = self.documents.lock().await;
+            let docs_count = docs.len();
             docs.clear();
+            eprintln!("Cleared {} document cache entries", docs_count);
         }
         {
             let mut trees = self.trees.lock().await;
+            let trees_count = trees.len();
             trees.clear();
+            eprintln!("Cleared {} AST tree cache entries", trees_count);
+        }
+
+        // Освобождаем парсер
+        {
+            let _parser = self.parser.lock().await;
+            eprintln!("Released tree-sitter parser resources");
         }
 
         self.client
@@ -174,7 +295,9 @@ impl LanguageServer for Backend {
         #[cfg(target_os = "windows")]
         {
             tokio::spawn(async {
+                eprintln!("Windows: Initiating graceful shutdown in 100ms...");
                 tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                eprintln!("Windows: Forcing process exit");
                 std::process::exit(0);
             });
         }
@@ -187,9 +310,13 @@ impl LanguageServer for Backend {
         let mut docs = self.documents.lock().await;
         docs.insert(
             params.text_document.uri.clone(),
-            params.text_document.text.clone(),
+            CacheEntry::new(params.text_document.text.clone()),
         );
         drop(docs);
+
+        // Принудительно ограничиваем размер кэша
+        self.enforce_cache_limits().await;
+
         // Парсим и кэшируем дерево при открытии
         self.parse_document_with_cache(&params.text_document.uri, &params.text_document.text)
             .await;
@@ -201,14 +328,19 @@ impl LanguageServer for Backend {
         let mut docs = self.documents.lock().await;
         if let Some(doc) = docs.get_mut(&params.text_document.uri) {
             if let Some(change) = params.content_changes.into_iter().next_back() {
-                *doc = change.text.clone();
+                // Обновляем запись с новым временным штампом
+                *doc = CacheEntry::new(change.text.clone());
+                let new_text = change.text.clone();
+                drop(docs);
+
                 // Инкрементальное обновление дерева
-                self.parse_document_with_cache(&params.text_document.uri, &change.text)
+                self.parse_document_with_cache(&params.text_document.uri, &new_text)
                     .await;
+                self.send_indexing_status(&params.text_document.uri).await;
+                return;
             }
         }
         drop(docs);
-        self.send_indexing_status(&params.text_document.uri).await;
     }
 
     // Hover-запрос: ищем переменную под курсором и возвращаем информацию о ней
@@ -219,16 +351,17 @@ impl LanguageServer for Backend {
         let docs = self.documents.lock().await;
 
         let code = match docs.get(&uri) {
-            Some(text) => text,
-            None => {
+            Some(entry) if !entry.is_expired() => entry.data.clone(),
+            _ => {
                 return Ok(None);
             }
         };
+        drop(docs); // Освобождаем блокировку раньше
 
         // Получаем дерево из кэша или парсим заново, если его нет
         let tree = match self.get_tree_from_cache(&uri).await {
             Some(tree) => tree,
-            None => match self.parse_document_with_cache(&uri, code).await {
+            None => match self.parse_document_with_cache(&uri, &code).await {
                 Some(tree) => tree,
                 None => {
                     eprintln!("Failed to parse document for hover: {}", uri);
@@ -240,8 +373,8 @@ impl LanguageServer for Backend {
         // Ищем переменную под курсором с улучшенным определением позиции
         let var_info = match std::panic::catch_unwind(|| {
             // Try enhanced detection first, fallback to standard
-            find_variable_at_position_enhanced(&tree, code, position)
-                .or_else(|| find_variable_at_position(&tree, code, position))
+            find_variable_at_position_enhanced(&tree, &code, position)
+                .or_else(|| find_variable_at_position(&tree, &code, position))
         }) {
             Ok(Some(var_info)) => var_info,
             Ok(None) => return Ok(None),
@@ -318,22 +451,25 @@ impl LanguageServer for Backend {
             let uri = args.text_document.uri;
             let position = args.position;
 
-            let docs = self.documents.lock().await;
-
-            let code = match docs.get(&uri) {
-                Some(text) => text,
-                None => {
-                    self.client
-                        .send_notification::<ProgressNotification>("No document found".to_string())
-                        .await;
-                    return Ok(None);
+            let code = {
+                let docs = self.documents.lock().await;
+                match docs.get(&uri) {
+                    Some(entry) if !entry.is_expired() => entry.data.clone(),
+                    _ => {
+                        self.client
+                            .send_notification::<ProgressNotification>(
+                                "No document found or expired".to_string(),
+                            )
+                            .await;
+                        return Ok(None);
+                    }
                 }
             };
 
             // Получаем дерево из кэша или парсим заново
             let tree = match self.get_tree_from_cache(&uri).await {
                 Some(tree) => tree,
-                None => match self.parse_document_with_cache(&uri, code).await {
+                None => match self.parse_document_with_cache(&uri, &code).await {
                     Some(tree) => tree,
                     None => {
                         self.client
@@ -349,9 +485,9 @@ impl LanguageServer for Backend {
             // Ищем переменную под курсором с улучшенным определением позиции
             let mut var_info = match std::panic::catch_unwind(|| {
                 // First try the enhanced detection
-                find_variable_at_position_enhanced(&tree, code, position).or_else(|| {
+                find_variable_at_position_enhanced(&tree, &code, position).or_else(|| {
                     // Fallback to standard detection
-                    find_variable_at_position(&tree, code, position)
+                    find_variable_at_position(&tree, &code, position)
                 })
             }) {
                 Ok(Some(var_info)) => var_info,
@@ -396,7 +532,7 @@ impl LanguageServer for Backend {
                         &tree,
                         &var_info.name,
                         *use_range,
-                        code,
+                        &code,
                     )
                 }) {
                     Ok(result) => result,
@@ -527,16 +663,19 @@ impl LanguageServer for Backend {
             let uri = args.uri;
             let docs = self.documents.lock().await;
             let code = match docs.get(&uri) {
-                Some(text) => text,
-                None => {
+                Some(entry) if !entry.is_expired() => entry.data.clone(),
+                _ => {
                     self.client
-                        .send_notification::<ProgressNotification>("No document found".to_string())
+                        .send_notification::<ProgressNotification>(
+                            "No document found or expired".to_string(),
+                        )
                         .await;
                     return Ok(None);
                 }
             };
+            drop(docs); // Освобождаем блокировку раньше
             let tree = self.get_tree_from_cache(&uri).await.or_else(|| {
-                futures::executor::block_on(self.parse_document_with_cache(&uri, code))
+                futures::executor::block_on(self.parse_document_with_cache(&uri, &code))
             });
             let tree = match tree {
                 Some(tree) => tree,
@@ -549,7 +688,7 @@ impl LanguageServer for Backend {
                     return Ok(None);
                 }
             };
-            let graph = build_graph_data(&tree, code);
+            let graph = build_graph_data(&tree, &code);
             let value = serde_json::to_value(&graph)
                 .map_err(|_| tower_lsp::jsonrpc::Error::internal_error())?;
             self.client

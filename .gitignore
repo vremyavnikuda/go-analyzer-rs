@@ -11,3 +11,5 @@ target
 # Personal development planning
 task.md
 .qoder/quests/project-analysis.md
+publish-to-crates.ps1
+publish-to-crates.sh

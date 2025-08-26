@@ -1,7 +1,7 @@
 {
   "name": "go-analyzer",
   "displayName": "Go Analyzer",
-  "description": "Go Analyzer - Advanced static analysis tool for Go development that provides real-time variable lifecycle tracking, data race detection, and visual code flow analysis. 🔍\n\n✨ KEY FEATURES:\n• Real-time variable lifecycle visualization with color-coded decorations\n• Automatic data race detection in goroutines and concurrent code\n• Interactive variable flow analysis - click on any variable to see its complete lifecycle\n• Customizable color schemes for different code elements\n• Automatic analysis on cursor movement with configurable delay\n• Visual graph representation of code relationships\n• Quick activation/deactivation with keyboard shortcuts\n\n🚀 HOW TO USE:\n1. Open any Go file in VS Code\n2. Use Shift+Alt+S to activate or Shift+Alt+C to deactivate the analyzer\n3. Place your cursor on any variable, function, or identifier\n4. The extension automatically highlights all related code with different colors:\n   - 🟢 Green: Variable declarations\n   - 🟡 Yellow: Variable usage\n   - 🔵 Blue: Pointer operations\n   - 🔴 Red: Potential data races (high priority)\n   - 🟠 Orange: Low-priority race warnings\n   - 🟣 Purple: Reassigned alias variables\n   - 🟪 Magenta: Captured variables in closures\n\n🎹 KEYBOARD SHORTCUTS:\n• Shift+Alt+S - Activate Go Analyzer\n• Shift+Alt+C - Deactivate Go Analyzer\n\n📋 COMMANDS:\n• 'Go Analyzer: Show Lifecycle' - Manually trigger analysis for current cursor position\n• 'Go Analyzer: Show Graph' - Display interactive visual graph of code relationships\n• 'Go Analyzer: Activate Extension' - Enable the analyzer\n• 'Go Analyzer: Deactivate Extension' - Disable the analyzer\n\n⚙️ CONFIGURATION:\nCustomize colors, enable/disable auto-analysis, and adjust timing in VS Code settings under 'Go Analyzer'.\n\n🎯 PERFECT FOR:\n• Debugging complex variable scopes\n• Identifying potential race conditions in concurrent Go code\n• Understanding data flow in large functions\n• Code review and refactoring\n• Learning Go concurrency patterns safely",
+  "description": "Go Analyzer - Advanced static analysis tool for Go development that provides real-time variable lifecycle tracking, data race detection, and visual code flow analysis.",
   "version": "0.0.1",
   "engines": {
     "vscode": "^1.60.0"
@@ -119,9 +119,15 @@
     }
   },
   "scripts": {
-    "vscode:prepublish": "npm run compile",
+    "vscode:prepublish": "npm run compile && npm run copy-server",
     "compile": "tsc -p ./",
-    "watch": "tsc -watch -p ./"
+    "watch": "tsc -watch -p ./",
+    "build": "npm run compile && npm run copy-server",
+    "clean": "rimraf out && rimraf server",
+    "copy-server": "node scripts/copy-server.js",
+    "package": "npm run build && vsce package",
+    "lint": "eslint src --ext ts",
+    "test": "npm run compile && node ./out/test/runTest.js"
   },
   "dependencies": {
     "vscode-languageclient": "^8.0.0"
@@ -129,6 +135,11 @@
   "devDependencies": {
     "@types/vscode": "^1.60.0",
     "@types/node": "14.x",
-    "typescript": "^4.3.2"
+    "typescript": "^4.3.2",
+    "rimraf": "^3.0.2",
+    "@typescript-eslint/eslint-plugin": "^5.0.0",
+    "@typescript-eslint/parser": "^5.0.0",
+    "eslint": "^8.0.0",
+    "vsce": "^2.0.0"
   }
 }

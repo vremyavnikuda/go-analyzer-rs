@@ -1,7 +1,50 @@
 [package]
-name = "go-analyzer-rs"
+name = "go-analyzer"
 version = "0.1.0"
 edition = "2021"
+authors = ["Go Analyzer Team <go-analyzer-team@example.com>"]
+license = "MIT"
+description = "A high-performance Language Server Protocol (LSP) implementation for Go code analysis, providing real-time variable lifecycle tracking and data race detection"
+homepage = "https://github.com/vremyavnikuda/go-analyzer-rs"
+repository = "https://github.com/vremyavnikuda/go-analyzer-rs"
+documentation = "https://github.com/vremyavnikuda/go-analyzer-rs#readme"
+readme = "README_CRATES.md"
+keywords = [
+    "go",
+    "golang",
+    "lsp",
+    "language-server",
+    "static-analysis",
+    "concurrency",
+    "race-detection",
+]
+categories = [
+    "development-tools",
+    "parser-implementations",
+    "command-line-utilities",
+]
+exclude = [
+    "vscode/*",
+    "golang_test/*",
+    "code-collector/*",
+    "*.vsix",
+    "task.md",
+    ".vscode/*",
+    ".idea/*",
+    "package.json",
+    "package-lock.json",
+    "publish-to-crates.ps1",
+    "publish-to-crates.sh",
+    "Makefile",
+    "README.md",
+    "README_RU.md",
+    "WINDOWS_SETUP.md",
+]
+
+# Binary configuration
+[[bin]]
+name = "go-analyzer"
+path = "src/main.rs"
 
 [dependencies]
 tree-sitter = "0.20"
@@ -19,3 +62,8 @@ url = "2"
 tokio = { version = "1", features = ["macros", "rt"] }
 tree-sitter-rust = "0.20"
 url = "2"
+
+[lints.clippy]
+expect_used = "deny"
+unwrap_used = "deny"
+missing_docs = "warn"

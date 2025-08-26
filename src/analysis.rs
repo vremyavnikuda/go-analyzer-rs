@@ -1,3 +1,7 @@
+#![allow(clippy::collapsible_if)]
+#![allow(clippy::clone_on_copy)]
+#![allow(clippy::only_used_in_recursion)]
+
 use crate::types::{GraphData, GraphEdge, GraphEdgeType, GraphEntityType, GraphNode};
 use crate::{types::*, util::node_to_range};
 use serde_json::json;
@@ -41,10 +45,8 @@ pub fn has_synchronization_in_block(tree: &Tree, range: Range, code: &str) -> bo
                 kind,
                 node.byte_range()
             );
-            if kind != "{" && kind != "}" {
-                if find_sync_in_node(node, code) {
-                    return true;
-                }
+            if kind != "{" && kind != "}" && find_sync_in_node(node, code) {
+                return true;
             }
             if !cursor.goto_next_sibling() {
                 break;
@@ -387,10 +389,11 @@ fn extract_variable_name(node: tree_sitter::Node, code: &str) -> Option<String> 
 
 /// Find the function scope that contains the target position
 fn find_function_scope(node: tree_sitter::Node, target: Point) -> Option<tree_sitter::Node> {
-    if node.kind() == "function_declaration" || node.kind() == "method_declaration" {
-        if node.start_position() <= target && target <= node.end_position() {
-            return Some(node);
-        }
+    if (node.kind() == "function_declaration" || node.kind() == "method_declaration")
+        && node.start_position() <= target
+        && target <= node.end_position()
+    {
+        return Some(node);
     }
 
     for i in 0..node.child_count() {
@@ -1191,7 +1194,7 @@ fn node_contains_position(node: tree_sitter::Node, position: Point) -> bool {
 }
 
 pub fn count_entities(tree: &Tree, code: &str) -> EntityCount {
-    fn traverse(node: Node, code: &str, counts: &mut EntityCount) {
+    fn traverse(node: Node, _code: &str, counts: &mut EntityCount) {
         match node.kind() {
             "var_spec" | "short_var_declaration" => {
                 let mut cursor = node.walk();
@@ -1228,7 +1231,7 @@ pub fn count_entities(tree: &Tree, code: &str) -> EntityCount {
         let mut cursor = node.walk();
         if cursor.goto_first_child() {
             loop {
-                traverse(cursor.node(), code, counts);
+                traverse(cursor.node(), _code, counts);
                 if !cursor.goto_next_sibling() {
                     break;
                 }

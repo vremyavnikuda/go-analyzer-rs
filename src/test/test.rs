@@ -14,6 +14,8 @@ pub fn parse_go(code: &str) -> tree_sitter::Tree {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::len_zero)]
+
     use crate::analysis::{
         analyze_goroutine_usage, count_entities, determine_race_severity,
         find_node_at_cursor_with_context, find_variable_at_position,
@@ -119,7 +121,7 @@ func main() {
         assert_eq!(var_info_i.name, "i");
         assert!(var_info_i.declaration.start.line <= 3);
         // At least one use in println
-        assert!(var_info_i.uses.len() >= 1);
+        assert!(!var_info_i.uses.is_empty());
     }
 
     #[test]
@@ -268,7 +270,7 @@ func main() {
         let context =
             find_node_at_cursor_with_context(&tree, pos_var_decl).expect("Context should be found");
         // Context type implementation may vary - just verify we get some meaningful context
-        assert!(context.target_node_kind.len() > 0);
+        assert!(!context.target_node_kind.is_empty());
     }
 
     // Tests for Error Handling and Edge Cases

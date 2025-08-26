@@ -107,11 +107,34 @@ fn is_atomic_call(call: Node, code: &str) -> bool {
 }
 
 pub fn determine_race_severity(tree: &Tree, range: Range, code: &str) -> RaceSeverity {
-    if has_synchronization_in_block(tree, range, code) {
-        RaceSeverity::Low
+    // First, check if we're inside a goroutine
+    let target_point = Point {
+        row: range.start.line as usize,
+        column: range.start.character as usize,
+    };
+
+    // Find the goroutine context if any
+    if let Some(goroutine_node) = find_goroutine_context(tree.root_node(), target_point) {
+        // Check for synchronization within the entire goroutine scope
+        if has_synchronization_in_goroutine(goroutine_node, code) {
+            RaceSeverity::Low
+        } else {
+            RaceSeverity::High
+        }
     } else {
-        RaceSeverity::High
+        // Not in goroutine, check local block synchronization
+        if has_synchronization_in_block(tree, range, code) {
+            RaceSeverity::Low
+        } else {
+            RaceSeverity::High
+        }
     }
+}
+
+/// Check for synchronization within a goroutine scope
+fn has_synchronization_in_goroutine(goroutine_node: tree_sitter::Node, code: &str) -> bool {
+    // Look for synchronization primitives within the entire goroutine
+    find_sync_in_node(goroutine_node, code)
 }
 
 pub fn find_variable_at_position(tree: &Tree, code: &str, pos: Position) -> Option<VariableInfo> {
@@ -668,7 +691,7 @@ fn check_pointer_context(node: tree_sitter::Node, code: &str, var_info: &mut Var
 }
 
 /// Check if a variable usage is a reassignment (x = value or x := value after initial declaration)
-pub fn is_variable_reassignment(tree: &Tree, _var_name: &str, use_range: Range) -> bool {
+pub fn is_variable_reassignment(tree: &Tree, var_name: &str, use_range: Range, code: &str) -> bool {
     let target_point = Point {
         row: use_range.start.line as usize,
         column: use_range.start.character as usize,
@@ -678,17 +701,25 @@ pub fn is_variable_reassignment(tree: &Tree, _var_name: &str, use_range: Range) 
         if let Some(parent) = node.parent() {
             match parent.kind() {
                 "assignment_statement" => {
-                    // Check if this identifier is on the left side (assignment target)
+                    // For assignment statements like: x = value
+                    // Check if we can find the variable name in the left side
                     if let Some(left) = parent.child_by_field_name("left") {
-                        return node_contains_position(left, node.start_position());
+                        // Check if the left side contains our variable
+                        if contains_variable_name(left, var_name, code) {
+                            return true;
+                        }
                     }
                 }
                 "short_var_declaration" => {
-                    // For short var declarations, we need to distinguish between
-                    // initial declaration and reassignment in the same statement.
-                    // This is complex in Go, so for now we'll be conservative
-                    // and only flag explicit assignments (=) as reassignments
-                    return false;
+                    // For := declarations, check if this is a redeclaration
+                    // In Go, x := can be reassignment if x already exists in scope
+                    if let Some(left) = parent.child_by_field_name("left") {
+                        if contains_variable_name(left, var_name, code) {
+                            // This is more complex - for now return false (conservative)
+                            // In a complete implementation, we'd check if var already exists
+                            return false;
+                        }
+                    }
                 }
                 _ => {}
             }
@@ -697,10 +728,56 @@ pub fn is_variable_reassignment(tree: &Tree, _var_name: &str, use_range: Range) 
     false
 }
 
+/// Check if a node (like expression_list) contains a variable with the given name
+fn contains_variable_name(node: tree_sitter::Node, var_name: &str, code: &str) -> bool {
+    match node.kind() {
+        "identifier" => {
+            let node_text = tree_sitter_text(node, code);
+            node_text == var_name
+        }
+        "expression_list" | "identifier_list" => {
+            // Search through children for identifiers
+            for i in 0..node.child_count() {
+                if let Some(child) = node.child(i) {
+                    if contains_variable_name(child, var_name, code) {
+                        return true;
+                    }
+                }
+            }
+            false
+        }
+        _ => {
+            // For other node types, recursively search children
+            for i in 0..node.child_count() {
+                if let Some(child) = node.child(i) {
+                    if contains_variable_name(child, var_name, code) {
+                        return true;
+                    }
+                }
+            }
+            false
+        }
+    }
+}
+
+/// Helper function to extract text from a tree-sitter node
+fn tree_sitter_text(node: tree_sitter::Node, code: &str) -> String {
+    text(code, node).to_string()
+}
+
+/// Check if this is the initial declaration of the variable
+#[allow(dead_code)]
+fn is_initial_declaration(_tree: &Tree, _var_name: &str, _current_range: Range) -> bool {
+    // This is a simplified implementation
+    // In a complete implementation, we would analyze the AST structure to determine
+    // if this is truly the initial declaration vs a reassignment
+    true // Conservative default - assume it's initial declaration
+}
+
 /// Check if a variable is captured in a closure or goroutine
 pub fn is_variable_captured(
     tree: &Tree,
-    _var_name: &str,
+    var_name: &str,
     use_range: Range,
     declaration_range: Range,
 ) -> bool {
@@ -718,14 +795,74 @@ pub fn is_variable_captured(
     if let Some(use_node) = find_node_at_position(tree.root_node(), target_point) {
         // Find the declaration node
         if let Some(decl_node) = find_node_at_position(tree.root_node(), decl_point) {
-            // Check if usage is inside a closure or goroutine that's different from declaration scope
-            return is_in_different_closure_scope(use_node, decl_node);
+            // Check if usage is inside a different scope than declaration
+            return is_captured_in_different_scope(use_node, decl_node, var_name);
         }
     }
     false
 }
 
+/// Enhanced check for variable capture in different scopes
+fn is_captured_in_different_scope(
+    use_node: tree_sitter::Node,
+    decl_node: tree_sitter::Node,
+    _var_name: &str,
+) -> bool {
+    // Find the function/method that contains the declaration
+    let decl_function = find_enclosing_function(decl_node);
+
+    // Find any closure or goroutine that contains the usage
+    let use_closure = find_enclosing_closure_or_goroutine(use_node);
+    let use_function = find_enclosing_function(use_node);
+
+    match (use_closure, decl_function, use_function) {
+        (Some(_), Some(decl_func), Some(use_func)) => {
+            // Variable is used in a closure/goroutine
+            // Check if it's the same function scope
+            if decl_func == use_func {
+                // Same function, variable is captured from outer scope
+                true
+            } else {
+                // Different functions - this would be parameter passing or global access
+                false
+            }
+        }
+        (Some(_), Some(_), None) => {
+            // Usage in closure, declaration in function, but usage not in any function
+            // This shouldn't happen in well-formed Go code
+            false
+        }
+        (Some(_), None, _) => {
+            // Usage in closure, declaration not in function (global?)
+            // Consider this as capture
+            true
+        }
+        (None, _, _) => {
+            // Usage not in closure - not captured
+            false
+        }
+    }
+}
+
+/// Find the enclosing function (function_declaration or method_declaration)
+fn find_enclosing_function(node: tree_sitter::Node) -> Option<tree_sitter::Node> {
+    let mut current = Some(node);
+
+    while let Some(node) = current {
+        match node.kind() {
+            "function_declaration" | "method_declaration" => {
+                return Some(node);
+            }
+            _ => {
+                current = node.parent();
+            }
+        }
+    }
+    None
+}
+
 /// Check if two nodes are in different closure/goroutine scopes
+#[allow(dead_code)]
 fn is_in_different_closure_scope(
     use_node: tree_sitter::Node,
     decl_node: tree_sitter::Node,

@@ -751,13 +751,15 @@ func main() {
 
         // Test reassignment detection
         let reassign_range = Range::new(Position::new(3, 4), Position::new(3, 5));
-        let is_reassign = crate::analysis::is_variable_reassignment(&tree, "x", reassign_range);
+        let is_reassign =
+            crate::analysis::is_variable_reassignment(&tree, "x", reassign_range, code);
         assert!(is_reassign, "Should detect x = 100 as reassignment");
 
         // Test normal declaration (not reassignment)
         // The declaration itself should not be flagged as reassignment
         let decl_range = Range::new(Position::new(2, 4), Position::new(2, 5));
-        let is_not_reassign = crate::analysis::is_variable_reassignment(&tree, "x", decl_range);
+        let is_not_reassign =
+            crate::analysis::is_variable_reassignment(&tree, "x", decl_range, code);
         assert!(
             !is_not_reassign,
             "Should not detect declaration as reassignment"

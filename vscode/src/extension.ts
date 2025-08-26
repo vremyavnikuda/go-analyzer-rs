@@ -243,19 +243,68 @@ export function activate(context: vscode.ExtensionContext) {
     /* -------- команды активации/деактивации -------- */
     const activateCmd = vscode.commands.registerCommand(
         "goanalyzer.activate",
-        () => {
+        async () => {
             extensionActive = true;
             updateStatusBar();
-            vscode.window.showInformationMessage("Go Analyzer: Extension activated (Расширение активировано)");
+
+            // Restart LSP client if it was stopped
+            if (!client || client.state !== 2) { // Not running
+                try {
+                    console.log("Starting Go Analyzer LSP server...");
+
+                    const serverModule = resolveServerPath(context);
+                    const serverOptions: ServerOptions = {
+                        run: { command: serverModule, transport: TransportKind.stdio } as Executable,
+                        debug: { command: serverModule, transport: TransportKind.stdio } as Executable,
+                    };
+
+                    const clientOptions: LanguageClientOptions = {
+                        documentSelector: [{ scheme: "file", language: "go" }],
+                        synchronize: { fileEvents: vscode.workspace.createFileSystemWatcher("**/*.go") },
+                        progressOnInitialization: true,
+                    };
+
+                    client = new LanguageClient("goAnalyzer", "Go Analyzer", serverOptions, clientOptions);
+
+                    // Re-register notifications
+                    client.onNotification(IndexingStatusNotification, p => {
+                        lastStatus.variables = p.variables;
+                        lastStatus.functions = p.functions;
+                        lastStatus.channels = p.channels;
+                        lastStatus.goroutines = p.goroutines;
+                        updateStatusBar();
+                    });
+
+                    client.onNotification(ProgressNotification, message => {
+                        vscode.window.showInformationMessage(message);
+                    });
+
+                    await client.start();
+                    console.log("Go Analyzer LSP server restarted successfully");
+
+                    // Restart cursor tracking
+                    startCursorTracking();
+                } catch (error) {
+                    console.error("Error restarting LSP server:", error);
+                    vscode.window.showErrorMessage(`Failed to restart Go Analyzer: ${error}`);
+                    return;
+                }
+            } else {
+                // Server already running, just restart cursor tracking
+                startCursorTracking();
+            }
+
+            vscode.window.showInformationMessage("Go Analyzer: Extension activated - Ready for analysis (Расширение активировано - Готов к анализу)");
         }
     );
     context.subscriptions.push(activateCmd);
 
     const deactivateCmd = vscode.commands.registerCommand(
         "goanalyzer.deactivate",
-        () => {
+        async () => {
             extensionActive = false;
             updateStatusBar();
+
             // Clear any existing decorations
             const editor = vscode.window.activeTextEditor;
             if (editor && editor.document.languageId === "go") {
@@ -263,7 +312,23 @@ export function activate(context: vscode.ExtensionContext) {
                     editor.setDecorations(decorationTypes[key as keyof typeof decorationTypes], []);
                 }
             }
-            vscode.window.showInformationMessage("Go Analyzer: Extension deactivated (Расширение деактивировано)");
+
+            // Stop cursor tracking
+            cursorDisp?.dispose();
+            clearTimeout(timeoutHandle as NodeJS.Timeout);
+
+            // Properly shutdown LSP client and server
+            if (client && client.state === 2) { // State.Running
+                try {
+                    console.log("Stopping Go Analyzer LSP server...");
+                    await client.stop();
+                    console.log("Go Analyzer LSP server stopped successfully");
+                } catch (error) {
+                    console.error("Error stopping LSP server:", error);
+                }
+            }
+
+            vscode.window.showInformationMessage("Go Analyzer: Extension deactivated - LSP server stopped (Расширение деактивировано - LSP сервер остановлен)");
         }
     );
     context.subscriptions.push(deactivateCmd);

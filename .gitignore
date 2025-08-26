@@ -7,3 +7,7 @@ target
 .idea
 .vscode/launch.json
 .vscode/settings.json
+
+# Personal development planning
+task.md
+.qoder/quests/project-analysis.md

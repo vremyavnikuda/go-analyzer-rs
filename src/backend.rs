@@ -154,8 +154,31 @@ impl LanguageServer for Backend {
             .await;
     }
 
-    // Завершение работы сервера
+    // Завершение работы сервера - правильная очистка ресурсов
     async fn shutdown(&self) -> tower_lsp::jsonrpc::Result<()> {
+        // Очищаем кэши и освобождаем ресурсы
+        {
+            let mut docs = self.documents.lock().await;
+            docs.clear();
+        }
+        {
+            let mut trees = self.trees.lock().await;
+            trees.clear();
+        }
+
+        self.client
+            .log_message(MessageType::INFO, "Go Analyzer server shutdown completed")
+            .await;
+
+        // На Windows добавляем принудительный выход для предотвращения зависших процессов
+        #[cfg(target_os = "windows")]
+        {
+            tokio::spawn(async {
+                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                std::process::exit(0);
+            });
+        }
+
         Ok(())
     }
 
@@ -369,7 +392,12 @@ impl LanguageServer for Backend {
 
                 // Check for variable reassignment
                 let is_reassignment = match std::panic::catch_unwind(|| {
-                    crate::analysis::is_variable_reassignment(&tree, &var_info.name, *use_range)
+                    crate::analysis::is_variable_reassignment(
+                        &tree,
+                        &var_info.name,
+                        *use_range,
+                        code,
+                    )
                 }) {
                     Ok(result) => result,
                     Err(e) => {

@@ -67,7 +67,9 @@ cargo test
 #### Пошаговая сборка:
 
 ```bash
-make clean    # Очистить предыдущие сборки (win-clean или unix-clean)
+# Очистить предыдущие сборки (win-clean или unix-clean)
+make win-clean
+make unix-clean
 # Собрать всё и упаковать расширение (Windows)
 make build-windows
 
@@ -81,7 +83,6 @@ cargo test
 #### Пошаговая сборка:
 
 ```bash
-make clean    # Очистить предыдущие сборки (win-clean или unix-clean)
 make build    # Собрать Rust сервер
 make copy     # Скопировать сервер в папку расширения
 make npm      # Установить Node.js зависимости

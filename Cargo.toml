@@ -1,8 +1,8 @@
 [package]
 name = "go-analyzer"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
-authors = ["Go Analyzer Team <go-analyzer-team@example.com>"]
+authors = ["vremyavnikuda hopperplayer0@gmail.com>"]
 license = "MIT"
 description = "A high-performance Language Server Protocol (LSP) implementation for Go code analysis, providing real-time variable lifecycle tracking and data race detection"
 homepage = "https://github.com/vremyavnikuda/go-analyzer-rs"

@@ -62,10 +62,14 @@ impl<T> CacheEntry<T> {
 
 // Основная структура Backend, реализующая сервер LSP
 pub struct Backend {
-    pub client: Client, // Клиент LSP для отправки уведомлений и сообщений
-    pub documents: Mutex<HashMap<Url, CacheEntry<String>>>, // Кэш открытых документов с TTL
-    pub parser: Mutex<Parser>, // Парсер tree-sitter для Go
-    pub trees: Mutex<HashMap<Url, CacheEntry<Tree>>>, // Кэш синтаксических деревьев с TTL
+    // Клиент LSP для отправки уведомлений и сообщений
+    pub client: Client,
+    // Кэш открытых документов с TTL
+    pub documents: Mutex<HashMap<Url, CacheEntry<String>>>,
+    // Парсер tree-sitter для Go
+    pub parser: Mutex<Parser>,
+    // Кэш синтаксических деревьев с TTL
+    pub trees: Mutex<HashMap<Url, CacheEntry<Tree>>>,
 }
 
 impl Backend {
@@ -356,7 +360,8 @@ impl LanguageServer for Backend {
                 return Ok(None);
             }
         };
-        drop(docs); // Освобождаем блокировку раньше
+        // Освобождаем блокировку раньше
+        drop(docs);
 
         // Получаем дерево из кэша или парсим заново, если его нет
         let tree = match self.get_tree_from_cache(&uri).await {
@@ -431,22 +436,28 @@ impl LanguageServer for Backend {
                 return Ok(None);
             }
 
-            let args: TextDocumentPositionParams =
-                match serde_json::from_value(params.arguments[0].clone()) {
-                    Ok(args) => args,
-                    Err(e) => {
-                        eprintln!("Failed to deserialize arguments: {}", e);
-                        self.client
-                            .send_notification::<ProgressNotification>(
-                                "Invalid arguments".to_string(),
-                            )
-                            .await;
-                        return Err(tower_lsp::jsonrpc::Error::invalid_params(format!(
+            let args: TextDocumentPositionParams = match params
+                .arguments
+                .first()
+                .ok_or_else(|| {
+                    tower_lsp::jsonrpc::Error::invalid_params("Missing arguments".to_string())
+                })
+                .and_then(|arg| {
+                    serde_json::from_value(arg.clone()).map_err(|e| {
+                        tower_lsp::jsonrpc::Error::invalid_params(format!(
                             "Invalid arguments: {}",
                             e
-                        )));
-                    }
-                };
+                        ))
+                    })
+                }) {
+                Ok(args) => args,
+                Err(e) => {
+                    self.client
+                        .send_notification::<ProgressNotification>("Invalid arguments".to_string())
+                        .await;
+                    return Err(e);
+                }
+            };
 
             let uri = args.text_document.uri;
             let position = args.position;
@@ -538,7 +549,8 @@ impl LanguageServer for Backend {
                     Ok(result) => result,
                     Err(e) => {
                         eprintln!("Panic occurred in is_variable_reassignment: {:?}", e);
-                        false // Safe fallback
+                        // Safe fallback
+                        false
                     }
                 };
 
@@ -559,7 +571,8 @@ impl LanguageServer for Backend {
                         Ok(result) => result,
                         Err(e) => {
                             eprintln!("Panic occurred in is_variable_captured: {:?}", e);
-                            false // Safe fallback
+                            // Safe fallback
+                            false
                         }
                     };
 
@@ -580,7 +593,8 @@ impl LanguageServer for Backend {
                             Ok(result) => result,
                             Err(e) => {
                                 eprintln!("Panic occurred in is_in_goroutine: {:?}", e);
-                                false // Safe fallback
+                                // Safe fallback
+                                false
                             }
                         };
 
@@ -592,7 +606,8 @@ impl LanguageServer for Backend {
                             Ok(severity) => severity,
                             Err(e) => {
                                 eprintln!("Panic occurred in determine_race_severity: {:?}", e);
-                                RaceSeverity::Medium // Safe fallback
+                                // Safe fallback
+                                RaceSeverity::Medium
                             }
                         };
 
@@ -656,9 +671,19 @@ impl LanguageServer for Backend {
             self.client
                 .log_message(MessageType::INFO, "Executing goanalyzer/graph")
                 .await;
-            let args: TextDocumentIdentifier = serde_json::from_value(params.arguments[0].clone())
-                .map_err(|e| {
-                    tower_lsp::jsonrpc::Error::invalid_params(format!("Invalid arguments: {}", e))
+            let args: TextDocumentIdentifier = params
+                .arguments
+                .first()
+                .ok_or_else(|| {
+                    tower_lsp::jsonrpc::Error::invalid_params("Missing arguments".to_string())
+                })
+                .and_then(|arg| {
+                    serde_json::from_value(arg.clone()).map_err(|e| {
+                        tower_lsp::jsonrpc::Error::invalid_params(format!(
+                            "Invalid arguments: {}",
+                            e
+                        ))
+                    })
                 })?;
             let uri = args.uri;
             let docs = self.documents.lock().await;
@@ -673,7 +698,8 @@ impl LanguageServer for Backend {
                     return Ok(None);
                 }
             };
-            drop(docs); // Освобождаем блокировку раньше
+            // Освобождаем блокировку раньше
+            drop(docs);
             let tree = self.get_tree_from_cache(&uri).await.or_else(|| {
                 futures::executor::block_on(self.parse_document_with_cache(&uri, &code))
             });

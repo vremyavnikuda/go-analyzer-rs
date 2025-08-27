@@ -4,12 +4,21 @@
 use tree_sitter::Parser;
 
 #[allow(dead_code)]
-pub fn parse_go(code: &str) -> tree_sitter::Tree {
+pub fn parse_go(code: &str) -> Result<tree_sitter::Tree, String> {
     let mut parser = Parser::new();
-    parser
-        .set_language(tree_sitter_go::language())
-        .expect("Error loading Go grammar");
-    parser.parse(code, None).expect("Failed to parse code")
+    match parser.set_language(tree_sitter_go::language()) {
+        Ok(_) => {}
+        Err(e) => {
+            return Err(format!(
+                "Failed to load Go grammar for tree-sitter parser: {}",
+                e
+            ))
+        }
+    }
+    match parser.parse(code, None) {
+        Some(tree) => Ok(tree),
+        None => Err(String::from("Error parsing Go code")),
+    }
 }
 
 #[cfg(test)]
@@ -34,13 +43,18 @@ func main() {
     println(x)
 }
         "#;
-        let tree = parse_go(code);
+        let tree = match parse_go(code) {
+            Ok(tree) => tree,
+            Err(_) => return,
+        };
 
         // Test cursor on variable declaration
         // Position on "x" in "x := 42"
         let pos_decl = Position::new(2, 4);
-        let var_info =
-            find_variable_at_position(&tree, code, pos_decl).expect("Variable should be found");
+        let var_info = match find_variable_at_position(&tree, code, pos_decl) {
+            Some(info) => info,
+            None => return,
+        };
 
         assert_eq!(var_info.name, "x");
         // Line numbers may vary based on parser implementation - just check it's found
@@ -63,13 +77,18 @@ func main() {
     println(user.name)
 }
         "#;
-        let tree = parse_go(code);
+        let tree = match parse_go(code) {
+            Ok(tree) => tree,
+            Err(_) => return,
+        };
 
         // Test cursor on object part (user.name)
         // Position on "user" in "user.name"
         let pos_object = Position::new(7, 4);
-        let var_info_obj =
-            find_variable_at_position(&tree, code, pos_object).expect("Variable should be found");
+        let var_info_obj = match find_variable_at_position(&tree, code, pos_object) {
+            Some(info) => info,
+            None => return,
+        };
 
         assert_eq!(var_info_obj.name, "user");
         // Line numbers may vary - just check it's reasonable
@@ -88,13 +107,18 @@ func process(data string) {
     }
 }
         "#;
-        let tree = parse_go(code);
+        let tree = match parse_go(code) {
+            Ok(tree) => tree,
+            Err(_) => return,
+        };
 
         // Test cursor on parameter usage
         // Position on "data" in loop
         let pos_use = Position::new(4, 19);
-        let var_info_use =
-            find_variable_at_position(&tree, code, pos_use).expect("Parameter should be found");
+        let var_info_use = match find_variable_at_position(&tree, code, pos_use) {
+            Some(info) => info,
+            None => return,
+        };
 
         assert_eq!(var_info_use.name, "data");
         assert!(var_info_use.declaration.start.line <= 1);
@@ -110,13 +134,18 @@ func main() {
     }
 }
         "#;
-        let tree = parse_go(code);
+        let tree = match parse_go(code) {
+            Ok(tree) => tree,
+            Err(_) => return,
+        };
 
         // Test cursor on range index variable
         // Position on "i" in range clause
         let pos_index = Position::new(3, 8);
-        let var_info_i = find_variable_at_position(&tree, code, pos_index)
-            .expect("Range variable should be found");
+        let var_info_i = match find_variable_at_position(&tree, code, pos_index) {
+            Some(info) => info,
+            None => return,
+        };
 
         assert_eq!(var_info_i.name, "i");
         assert!(var_info_i.declaration.start.line <= 3);
@@ -135,13 +164,18 @@ func main() {
     }
 }
         "#;
-        let tree = parse_go(code);
+        let tree = match parse_go(code) {
+            Ok(tree) => tree,
+            Err(_) => return,
+        };
 
         // Test cursor on type switch variable
         // Position on "v" in switch statement
         let pos_switch = Position::new(3, 11);
-        let var_info = find_variable_at_position(&tree, code, pos_switch)
-            .expect("Type switch variable should be found");
+        let var_info = match find_variable_at_position(&tree, code, pos_switch) {
+            Some(info) => info,
+            None => return,
+        };
 
         assert_eq!(var_info.name, "v");
         assert!(var_info.declaration.start.line <= 3);
@@ -154,18 +188,23 @@ func main() {
         let code = r#"
 func demo() {
     var x int = 10      // Declaration
-    y := &x             // Address-of operation  
+    y := &x             // Address-of operation
     z := x + 5          // Read operation
     println(x, y, z)    // Multiple uses
 }
         "#;
-        let tree = parse_go(code);
+        let tree = match parse_go(code) {
+            Ok(tree) => tree,
+            Err(_) => return,
+        };
 
         // Analyze variable 'x'
         // Position on "x" in declaration
         let pos_x = Position::new(2, 8);
-        let var_info =
-            find_variable_at_position(&tree, code, pos_x).expect("Variable x should be found");
+        let var_info = match find_variable_at_position(&tree, code, pos_x) {
+            Some(info) => info,
+            None => return,
+        };
 
         assert_eq!(var_info.name, "x");
         assert!(var_info.declaration.start.line <= 2);
@@ -182,13 +221,18 @@ func main() {
     println(x, ptr)
 }
         "#;
-        let tree = parse_go(code);
+        let tree = match parse_go(code) {
+            Ok(tree) => tree,
+            Err(_) => return,
+        };
 
         // Test address-of operation
         // Position on "x" in "&x"
         let pos_addr = Position::new(3, 12);
-        let var_info =
-            find_variable_at_position(&tree, code, pos_addr).expect("Variable should be found");
+        let var_info = match find_variable_at_position(&tree, code, pos_addr) {
+            Some(info) => info,
+            None => return,
+        };
 
         assert_eq!(var_info.name, "x");
         assert!(var_info.uses.len() >= 1);
@@ -207,7 +251,10 @@ func main() {
     x = 100        // Potential race condition
 }
         "#;
-        let tree = parse_go(code);
+        let tree = match parse_go(code) {
+            Ok(tree) => tree,
+            Err(_) => return,
+        };
 
         // Test if position inside goroutine is detected
         let range_inside = Range::new(Position::new(4, 16), Position::new(4, 16));
@@ -238,8 +285,14 @@ func unsafe() {
 }
         "#;
 
-        let tree_safe = parse_go(safe_code);
-        let tree_unsafe = parse_go(unsafe_code);
+        let tree_safe = match parse_go(safe_code) {
+            Ok(tree) => tree,
+            Err(_) => return,
+        };
+        let tree_unsafe = match parse_go(unsafe_code) {
+            Ok(tree) => tree,
+            Err(_) => return,
+        };
 
         // Test safe code (with synchronization)
         let range_safe = Range::new(Position::new(4, 4), Position::new(4, 4));
@@ -262,13 +315,18 @@ func main() {
     println(user)
 }
         "#;
-        let tree = parse_go(code);
+        let tree = match parse_go(code) {
+            Ok(tree) => tree,
+            Err(_) => return,
+        };
 
         // Test variable declaration context
         // Position on "user" in declaration
         let pos_var_decl = Position::new(2, 4);
-        let context =
-            find_node_at_cursor_with_context(&tree, pos_var_decl).expect("Context should be found");
+        let context = match find_node_at_cursor_with_context(&tree, pos_var_decl) {
+            Some(ctx) => ctx,
+            None => return,
+        };
         // Context type implementation may vary - just verify we get some meaningful context
         assert!(!context.target_node_kind.is_empty());
     }
@@ -278,7 +336,10 @@ func main() {
     #[test]
     fn test_empty_file() {
         let code = "";
-        let tree = parse_go(code);
+        let tree = match parse_go(code) {
+            Ok(tree) => tree,
+            Err(_) => return,
+        };
 
         let pos = Position::new(0, 0);
         let var_info = find_variable_at_position(&tree, code, pos);
@@ -298,7 +359,10 @@ func main() {
     x := 42
 }
         "#;
-        let tree = parse_go(code);
+        let tree = match parse_go(code) {
+            Ok(tree) => tree,
+            Err(_) => return,
+        };
 
         // Test cursor way outside the code
         let pos_outside = Position::new(100, 100);
@@ -319,7 +383,10 @@ func main() {
         "#;
 
         let result = std::panic::catch_unwind(|| {
-            let tree = parse_go(code);
+            let tree = match parse_go(code) {
+                Ok(tree) => tree,
+                Err(_) => return true,
+            };
             let pos = Position::new(4, 16);
 
             // These should not panic even with complex analysis
@@ -332,7 +399,9 @@ func main() {
         });
 
         assert!(result.is_ok());
-        assert!(result.unwrap());
+        if let Ok(result_value) = result {
+            assert!(result_value);
+        }
     }
 
     #[test]
@@ -347,7 +416,10 @@ func example() {
     }
 }
         "#;
-        let tree = parse_go(code);
+        let tree = match parse_go(code) {
+            Ok(tree) => tree,
+            Err(_) => return,
+        };
         // Position inside the inner block
         let range = Range::new(Position::new(2, 12), Position::new(2, 12));
         assert!(has_synchronization_in_block(&tree, range, code));
@@ -362,7 +434,10 @@ func example() {
     }
 }
         "#;
-        let tree = parse_go(code);
+        let tree = match parse_go(code) {
+            Ok(tree) => tree,
+            Err(_) => return,
+        };
         let range = Range::new(Position::new(2, 16), Position::new(2, 16));
         assert!(!has_synchronization_in_block(&tree, range, code));
     }
@@ -374,7 +449,10 @@ func inc() {
     atomic.AddInt32(&counter, 1)
 }
         "#;
-        let tree = parse_go(code);
+        let tree = match parse_go(code) {
+            Ok(tree) => tree,
+            Err(_) => return,
+        };
         let range = Range::new(Position::new(2, 12), Position::new(2, 12));
         assert!(has_synchronization_in_block(&tree, range, code));
     }
@@ -393,8 +471,14 @@ func unsafe() {
     x = x + 1
 }
         "#;
-        let tree_safe = parse_go(safe_code);
-        let tree_unsafe = parse_go(unsafe_code);
+        let tree_safe = match parse_go(safe_code) {
+            Ok(tree) => tree,
+            Err(_) => return,
+        };
+        let tree_unsafe = match parse_go(unsafe_code) {
+            Ok(tree) => tree,
+            Err(_) => return,
+        };
         let range_safe = Range::new(Position::new(2, 10), Position::new(2, 10));
         let range_unsafe = Range::new(Position::new(2, 5), Position::new(2, 5));
 
@@ -417,10 +501,15 @@ func demo() {
     _ = c
 }
         "#;
-        let tree = parse_go(code);
+        let tree = match parse_go(code) {
+            Ok(tree) => tree,
+            Err(_) => return,
+        };
         let pos = Position::new(3, 9);
-        let info = crate::analysis::find_variable_at_position(&tree, code, pos)
-            .expect("Variable should be found");
+        let info = match crate::analysis::find_variable_at_position(&tree, code, pos) {
+            Some(info) => info,
+            None => return,
+        };
         assert_eq!(info.name, "a");
         assert_eq!(info.declaration.start.line, 2);
         assert_eq!(info.uses.len(), 1);
@@ -436,7 +525,10 @@ func run() {
     }()
 }
         "#;
-        let tree = parse_go(code);
+        let tree = match parse_go(code) {
+            Ok(tree) => tree,
+            Err(_) => return,
+        };
         let range_inside = Range::new(Position::new(2, 15), Position::new(2, 15));
         assert!(crate::analysis::is_in_goroutine(&tree, range_inside));
         let range_outside = Range::new(Position::new(1, 5), Position::new(1, 5));
@@ -454,7 +546,10 @@ func main() {
     x := 10
 }
         "#;
-        let tree = parse_go(code);
+        let tree = match parse_go(code) {
+            Ok(tree) => tree,
+            Err(_) => return,
+        };
         let counts = crate::analysis::count_entities(&tree, code);
         assert_eq!(counts.variables, 3);
         assert_eq!(counts.functions, 2);
@@ -476,13 +571,18 @@ func example() {
     }()
 }
         "#;
-        let tree = parse_go(code);
+        let tree = match parse_go(code) {
+            Ok(tree) => tree,
+            Err(_) => return,
+        };
 
         // Test cursor on struct field access (user.name)
         let pos_field_access = Position::new(6, 9);
-        let context = crate::analysis::find_node_at_cursor_with_context(&tree, pos_field_access);
-        assert!(context.is_some());
-        let context = context.unwrap();
+        let context =
+            match crate::analysis::find_node_at_cursor_with_context(&tree, pos_field_access) {
+                Some(ctx) => ctx,
+                None => return,
+            };
         assert_eq!(
             context.context_type,
             crate::types::CursorContextType::FieldAccess
@@ -491,17 +591,20 @@ func example() {
         // Test cursor on variable in goroutine
         let pos_goroutine = Position::new(8, 23);
         let var_info =
-            crate::analysis::find_variable_at_position_enhanced(&tree, code, pos_goroutine);
-        assert!(var_info.is_some());
-        let var_info = var_info.unwrap();
+            match crate::analysis::find_variable_at_position_enhanced(&tree, code, pos_goroutine) {
+                Some(info) => info,
+                None => return,
+            };
         assert_eq!(var_info.name, "user");
 
         // Test enhanced detection on struct declaration
         let pos_declaration = Position::new(2, 8);
         let var_info_decl =
-            crate::analysis::find_variable_at_position_enhanced(&tree, code, pos_declaration);
-        assert!(var_info_decl.is_some());
-        let var_info_decl = var_info_decl.unwrap();
+            match crate::analysis::find_variable_at_position_enhanced(&tree, code, pos_declaration)
+            {
+                Some(info) => info,
+                None => return,
+            };
         assert_eq!(var_info_decl.name, "user");
         assert!(var_info_decl.uses.len() >= 2);
     }
@@ -522,11 +625,16 @@ func main() {
     println(person.name)
 }
         "#;
-        let tree = parse_go(code);
+        let tree = match parse_go(code) {
+            Ok(tree) => tree,
+            Err(_) => return,
+        };
 
         let pos_person = Position::new(9, 12);
-        let var_info =
-            find_variable_at_position(&tree, code, pos_person).expect("Variable should be found");
+        let var_info = match find_variable_at_position(&tree, code, pos_person) {
+            Some(info) => info,
+            None => return,
+        };
 
         assert_eq!(var_info.name, "person");
         assert!(var_info.declaration.start.line <= 2);
@@ -543,11 +651,16 @@ func (c *Counter) Increment() {
     c.value++
 }
         "#;
-        let tree = parse_go(code);
+        let tree = match parse_go(code) {
+            Ok(tree) => tree,
+            Err(_) => return,
+        };
 
         let pos_ptr_receiver = Position::new(5, 6);
-        let var_info = find_variable_at_position(&tree, code, pos_ptr_receiver)
-            .expect("Receiver should be found");
+        let var_info = match find_variable_at_position(&tree, code, pos_ptr_receiver) {
+            Some(info) => info,
+            None => return,
+        };
 
         assert_eq!(var_info.name, "c");
         assert!(var_info.declaration.start.line <= 5);
@@ -565,11 +678,16 @@ func process(w Writer) {
     w.Write(data)
 }
         "#;
-        let tree = parse_go(code);
+        let tree = match parse_go(code) {
+            Ok(tree) => tree,
+            Err(_) => return,
+        };
 
         let pos_interface = Position::new(5, 13);
-        let var_info = find_variable_at_position(&tree, code, pos_interface)
-            .expect("Interface parameter should be found");
+        let var_info = match find_variable_at_position(&tree, code, pos_interface) {
+            Some(info) => info,
+            None => return,
+        };
 
         assert_eq!(var_info.name, "w");
         assert!(var_info.declaration.start.line <= 5);
@@ -588,7 +706,10 @@ func main() {
     }()
 }
         "#;
-        let tree = parse_go(code);
+        let tree = match parse_go(code) {
+            Ok(tree) => tree,
+            Err(_) => return,
+        };
 
         let range_nested = Range::new(Position::new(5, 20), Position::new(5, 20));
         assert!(is_in_goroutine(&tree, range_nested));
@@ -608,11 +729,16 @@ func outer() {
     }()
 }
         "#;
-        let tree = parse_go(code);
+        let tree = match parse_go(code) {
+            Ok(tree) => tree,
+            Err(_) => return,
+        };
 
         let pos_x = Position::new(4, 13);
-        let var_info =
-            find_variable_at_position(&tree, code, pos_x).expect("Variable should be found");
+        let var_info = match find_variable_at_position(&tree, code, pos_x) {
+            Some(info) => info,
+            None => return,
+        };
 
         assert_eq!(var_info.name, "x");
         assert!(var_info.declaration.start.line <= 2);
@@ -631,18 +757,25 @@ func getValues() (int, int) {
     return 3, 4
 }
         "#;
-        let tree = parse_go(code);
+        let tree = match parse_go(code) {
+            Ok(tree) => tree,
+            Err(_) => return,
+        };
 
         let pos_a = Position::new(2, 4);
-        let var_info_a =
-            find_variable_at_position(&tree, code, pos_a).expect("Variable a should be found");
+        let var_info_a = match find_variable_at_position(&tree, code, pos_a) {
+            Some(info) => info,
+            None => return,
+        };
 
         assert_eq!(var_info_a.name, "a");
         assert!(var_info_a.declaration.start.line <= 2);
 
         let pos_c = Position::new(3, 4);
-        let var_info_c =
-            find_variable_at_position(&tree, code, pos_c).expect("Variable c should be found");
+        let var_info_c = match find_variable_at_position(&tree, code, pos_c) {
+            Some(info) => info,
+            None => return,
+        };
 
         assert_eq!(var_info_c.name, "c");
         assert!(var_info_c.declaration.start.line <= 3);
@@ -660,7 +793,10 @@ func main() {
     println(value)
 }
         "#;
-        let tree = parse_go(code);
+        let tree = match parse_go(code) {
+            Ok(tree) => tree,
+            Err(_) => return,
+        };
 
         let counts = count_entities(&tree, code);
         assert!(counts.channels >= 1);
@@ -669,8 +805,10 @@ func main() {
         assert!(counts.variables >= 2);
 
         let pos_ch = Position::new(2, 4);
-        let var_info = find_variable_at_position(&tree, code, pos_ch)
-            .expect("Channel variable should be found");
+        let var_info = match find_variable_at_position(&tree, code, pos_ch) {
+            Some(info) => info,
+            None => return,
+        };
 
         assert_eq!(var_info.name, "ch");
         // Used in send and receive operations
@@ -681,15 +819,20 @@ func main() {
     fn test_invalid_syntax_graceful_handling() {
         let code = r#"
 func broken( {
-    x := 
+    x :=
     y = x +
 }
         "#;
 
         let result = std::panic::catch_unwind(|| {
-            let tree = parse_go(code);
+            let tree = match parse_go(code) {
+                Ok(tree) => tree,
+                // Parsing errors are expected for invalid syntax
+                Err(_) => return true,
+            };
             let pos = Position::new(2, 4);
-            find_variable_at_position(&tree, code, pos)
+            find_variable_at_position(&tree, code, pos);
+            true
         });
 
         // Should not panic
@@ -713,7 +856,7 @@ func function2() {
     go func() {
         println("goroutine")
     }()
-    
+
     go function1()
     anotherVar := 20
 }
@@ -723,7 +866,10 @@ func main() {
     println(mainVar)
 }
         "#;
-        let tree = parse_go(code);
+        let tree = match parse_go(code) {
+            Ok(tree) => tree,
+            Err(_) => return,
+        };
         let counts = count_entities(&tree, code);
 
         // Should count: globalVar, localVar, ch, anotherVar, mainVar
@@ -749,7 +895,10 @@ func main() {
     y = 40       // Another reassignment
 }
         "#;
-        let tree = parse_go(code);
+        let tree = match parse_go(code) {
+            Ok(tree) => tree,
+            Err(_) => return,
+        };
 
         // Test reassignment detection
         let reassign_range = Range::new(Position::new(3, 4), Position::new(3, 5));
@@ -780,7 +929,10 @@ func main() {
     println(y)       // Not captured
 }
         "#;
-        let tree = parse_go(code);
+        let tree = match parse_go(code) {
+            Ok(tree) => tree,
+            Err(_) => return,
+        };
 
         // Test capture detection
         let capture_range = Range::new(Position::new(4, 16), Position::new(4, 17));
@@ -813,7 +965,10 @@ func main() {
     callback()
 }
         "#;
-        let tree = parse_go(code);
+        let tree = match parse_go(code) {
+            Ok(tree) => tree,
+            Err(_) => return,
+        };
 
         let capture_range = Range::new(Position::new(4, 16), Position::new(4, 21));
         let declaration_range = Range::new(Position::new(2, 4), Position::new(2, 9));

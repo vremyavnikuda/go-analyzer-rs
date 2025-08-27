@@ -774,7 +774,8 @@ fn is_initial_declaration(_tree: &Tree, _var_name: &str, _current_range: Range) 
     // This is a simplified implementation
     // In a complete implementation, we would analyze the AST structure to determine
     // if this is truly the initial declaration vs a reassignment
-    true // Conservative default - assume it's initial declaration
+    // Conservative default - assume it's initial declaration
+    true
 }
 
 /// Check if a variable is captured in a closure or goroutine
@@ -1250,8 +1251,13 @@ pub fn count_entities(tree: &Tree, code: &str) -> EntityCount {
 
 #[inline]
 fn text<'a>(code: &'a str, node: Node) -> &'a str {
-    let bytes = &code.as_bytes()[node.start_byte()..node.end_byte()];
-    unsafe { std::str::from_utf8_unchecked(bytes) }
+    let bytes = code.as_bytes();
+    if let Some(slice) = bytes.get(node.start_byte()..node.end_byte()) {
+        unsafe { std::str::from_utf8_unchecked(slice) }
+    } else {
+        // Return empty string if indices are out of bounds
+        ""
+    }
 }
 
 /// Собирает граф сущностей Go-файла (переменные, функции, каналы, горутины и связи)

@@ -265,27 +265,38 @@ pub enum GraphEntityType {
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Hash)]
 pub enum GraphEdgeType {
-    Use,     // переменная используется
-    Call,    // вызов функции
-    Send,    // отправка в канал
-    Receive, // получение из канала
-    Spawn,   // запуск горутины
-    Sync,    // синхронизация
+    // переменная используется
+    Use,
+    // вызов функции
+    Call,
+    // отправка в канал
+    Send,
+    // получение из канала
+    Receive,
+    // запуск горутины
+    Spawn,
+    // синхронизация
+    Sync,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct GraphNode {
-    pub id: String,    // уникальный идентификатор (например, имя+позиция)
-    pub label: String, // отображаемое имя
+    // уникальный идентификатор (например, имя+позиция)
+    pub id: String,
+    // отображаемое имя
+    pub label: String,
     pub entity_type: GraphEntityType,
     pub range: Range,
-    pub extra: Option<serde_json::Value>, // для доп. информации (тип, гонка, и т.д.)
+    // для доп. информации (тип, гонка, и т.д.)
+    pub extra: Option<serde_json::Value>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct GraphEdge {
-    pub from: String, // id источника
-    pub to: String,   // id назначения
+    // id источника
+    pub from: String,
+    // id назначения
+    pub to: String,
     pub edge_type: GraphEdgeType,
 }
 

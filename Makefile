@@ -10,8 +10,8 @@ build-windows: win-clean win-build win-copy npm compile package
 win-clean:
 	@cargo clean
 	@echo "INFO: Cleaning Rust project (Windows)"
-	@del /f /q "vscode\\server\\go-analyzer-rs.exe"
-	@echo "INFO: go-analyzer-rs.exe delete "vscode\server\go-analyzer-rs.exe""
+	@del /f /q "vscode\\server\\go-analyzer.exe"
+	@echo "INFO: go-analyzer.exe delete "vscode\server\go-analyzer.exe""
 	@del /f /q "vscode\\go-analyzer-0.0.1.vsix"
 	@echo "INFO: go-analyzer-0.0.1.vsix delete "vscode\\go-analyzer-0.0.1.vsix""
 
@@ -23,7 +23,7 @@ win-build:
 win-copy:
 	@echo "INFO: Copying server binary file"
 	@if not exist "vscode\\server" mkdir "vscode\\server"
-	@copy /Y "target\\release\\go-analyzer-rs.exe" "vscode\\server\\go-analyzer-rs.exe"
+	@copy /Y "target\\release\\go-analyzer.exe" "vscode\\server\\go-analyzer.exe"
 	
 	
 
@@ -42,7 +42,7 @@ unix-build:
 unix-copy:
 	@echo "INFO: Copying Linux binary"
 	@mkdir -p vscode/server
-	@cp target/release/go-analyzer-rs vscode/server/go-analyzer-rs
+	@cp target/release/go-analyzer vscode/server/go-analyzer
 
 # Node / VS Code
 npm:

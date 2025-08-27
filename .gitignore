@@ -13,3 +13,6 @@ task.md
 .qoder/quests/project-analysis.md
 publish-to-crates.ps1
 publish-to-crates.sh
+vscode/image.jpg
+.qoder/quests/extension-publish-check.md
+vscode/icon_.png

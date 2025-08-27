@@ -16,14 +16,14 @@ function resolveServerPath(ctx: vscode.ExtensionContext): string {
     if (env && fs.existsSync(env)) return env;
 
     const bin = process.platform === "win32"
-        ? "go-analyzer-rs.exe"
-        : "go-analyzer-rs";
+        ? "go-analyzer.exe"
+        : "go-analyzer";
 
     const primary = path.join(ctx.extensionPath, "server", bin);
     const secondary = path.join(
         ctx.extensionPath,
         "server",
-        bin.endsWith(".exe") ? "go-analyzer-rs" : "go-analyzer-rs.exe",
+        bin.endsWith(".exe") ? "go-analyzer" : "go-analyzer.exe",
     );
 
     if (fs.existsSync(primary)) return primary;

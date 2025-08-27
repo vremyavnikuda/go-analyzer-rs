@@ -2,7 +2,7 @@ const fs = require('fs');
 const path = require('path');
 
 const isWindows = process.platform === 'win32';
-const serverBinaryName = isWindows ? 'go-analyzer-rs.exe' : 'go-analyzer-rs';
+const serverBinaryName = isWindows ? 'go-analyzer.exe' : 'go-analyzer';
 
 // Paths
 const cargoTargetDir = path.join(__dirname, '../../target/release');

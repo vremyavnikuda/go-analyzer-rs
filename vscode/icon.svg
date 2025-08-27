@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="128" height="128" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg">
+  <!-- Background -->
+  <rect width="128" height="128" fill="#00ADD8" rx="16"/>
+  
+  <!-- Go logo style background -->
+  <circle cx="64" cy="64" r="50" fill="#ffffff" opacity="0.1"/>
+  
+  <!-- Main "Go" text -->
+  <text x="64" y="45" font-family="Arial, sans-serif" font-size="28" font-weight="bold" 
+        text-anchor="middle" fill="#ffffff">Go</text>
+  
+  <!-- Analyzer symbol - graph/network -->
+  <g stroke="#ffffff" stroke-width="2" fill="#ffffff">
+    <!-- Nodes -->
+    <circle cx="30" cy="85" r="4"/>
+    <circle cx="64" cy="75" r="4"/>
+    <circle cx="98" cy="85" r="4"/>
+    <circle cx="50" cy="105" r="4"/>
+    <circle cx="78" cy="105" r="4"/>
+    
+    <!-- Connections -->
+    <line x1="30" y1="85" x2="50" y2="105" stroke-width="1.5"/>
+    <line x1="30" y1="85" x2="64" y2="75" stroke-width="1.5"/>
+    <line x1="64" y1="75" x2="98" y2="85" stroke-width="1.5"/>
+    <line x1="64" y1="75" x2="50" y2="105" stroke-width="1.5"/>
+    <line x1="64" y1="75" x2="78" y2="105" stroke-width="1.5"/>
+    <line x1="98" y1="85" x2="78" y2="105" stroke-width="1.5"/>
+    <line x1="50" y1="105" x2="78" y2="105" stroke-width="1.5"/>
+  </g>
+  
+  <!-- Analysis indicator -->
+  <text x="64" y="120" font-family="Arial, sans-serif" font-size="10" 
+        text-anchor="middle" fill="#ffffff" opacity="0.8">ANALYZER</text>
+</svg>

@@ -3,6 +3,7 @@
   "displayName": "Go Analyzer",
   "description": "Go Analyzer - Advanced static analysis tool for Go development that provides real-time variable lifecycle tracking, data race detection, and visual code flow analysis.",
   "version": "0.0.1",
+  "icon": "icon.png",
   "engines": {
     "vscode": "^1.60.0"
   },
@@ -26,7 +27,7 @@
     "lifecycle",
     "pointer analysis"
   ],
-  "publisher": "go-analyzer-team",
+  "publisher": "vremyavnikuda",
   "license": "MIT",
   "activationEvents": [
     "onLanguage:go"

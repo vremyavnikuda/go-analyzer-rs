@@ -31,12 +31,12 @@ if (!fs.existsSync(sourcePath)) {
 try {
     // Copy the binary
     fs.copyFileSync(sourcePath, destPath);
-    
+
     // Make it executable on Unix systems
     if (!isWindows) {
         fs.chmodSync(destPath, 0o755);
     }
-    
+
     console.log('✅ Server binary copied successfully!');
     console.log(`Binary size: ${(fs.statSync(destPath).size / 1024 / 1024).toFixed(2)} MB`);
 } catch (error) {

@@ -7,11 +7,13 @@ all:
 build-windows: win-clean win-build win-copy npm compile package
 	@echo "INFO: Full Windows build complete"
 
-win-clean:
+dev-win-clean:
 	@cargo clean
 	@echo "INFO: Cleaning Rust project (Windows)"
 	@del /f /q "vscode\\server\\go-analyzer.exe"
 	@echo "INFO: go-analyzer.exe delete "vscode\server\go-analyzer.exe""
+	@del /f /q "vscode\\go-analyzer-0.1.0.vsix"
+	@echo "INFO: go-analyzer-0.1.0.vsix delete "vscode\\go-analyzer-0.1.0.vsix""
 	@del /f /q "vscode\\go-analyzer-0.0.1.vsix"
 	@echo "INFO: go-analyzer-0.0.1.vsix delete "vscode\\go-analyzer-0.0.1.vsix""
 
@@ -24,8 +26,8 @@ win-copy:
 	@echo "INFO: Copying server binary file"
 	@if not exist "vscode\\server" mkdir "vscode\\server"
 	@copy /Y "target\\release\\go-analyzer.exe" "vscode\\server\\go-analyzer.exe"
-	
-	
+
+
 
 # LINUX
 build-linux: unix-clean unix-build unix-copy npm compile package
@@ -57,16 +59,37 @@ package:
 	@cd vscode && vsce package
 	@echo "INFO: Packaging VS Code extension"
 
-# «build»
+# VS Code Extension Only Build
+build-vscode: npm compile
+	@echo "INFO: Compiling TypeScript extension"
+	@cd vscode && vsce package
+	@echo "INFO: VS Code extension build complete (no server binary)"
+
+# Extension Only - No Server Dependencies
+extension-only:
+	@echo "INFO: Building VS Code extension only (no server interaction)"
+	@cd vscode && npm install
+	@cd vscode && tsc -p ./
+	@cd vscode && vsce package --allow-missing-repository --no-dependencies
+	@echo "✅ Extension built successfully without server binary"
+
+# VS Code Extension Build with Server Binary
+build-vscode-full: npm compile
+	@echo "INFO: Compiling TypeScript extension"
+	@cd vscode && npm run copy-server
+	@cd vscode && vsce package
+	@echo "INFO: VS Code extension build complete (with server binary)"
+
+# dev kit «build» (make dev-build)
 ifeq ($(OS),Windows_NT)
-build: build-windows
+dev-build: build-windows
 else
-build: build-linux
+dev-build: build-linux
 endif
 
 # PHONY
 .PHONY: \
-	all build build-windows build-linux \
+	all build build-windows build-linux build-vscode build-vscode-full extension-only \
 	win-clean win-build win-copy \
 	unix-clean unix-build unix-copy \
 	npm compile package \

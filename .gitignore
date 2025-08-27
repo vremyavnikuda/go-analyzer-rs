@@ -16,3 +16,4 @@ publish-to-crates.sh
 vscode/image.jpg
 .qoder/quests/extension-publish-check.md
 vscode/icon_.png
+vscode/go-analyzer-0.1.0.vsix

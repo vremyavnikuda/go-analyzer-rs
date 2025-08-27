@@ -12,6 +12,7 @@ import * as path from "path";
 import * as fs from "fs";
 
 function resolveServerPath(ctx: vscode.ExtensionContext): string {
+    // Check environment variable first (allows user override)
     const env = process.env.GO_ANALYZER_PATH;
     if (env && fs.existsSync(env)) return env;
 
@@ -19,23 +20,52 @@ function resolveServerPath(ctx: vscode.ExtensionContext): string {
         ? "go-analyzer.exe"
         : "go-analyzer";
 
-    const primary = path.join(ctx.extensionPath, "server", bin);
-    const secondary = path.join(
-        ctx.extensionPath,
-        "server",
-        bin.endsWith(".exe") ? "go-analyzer" : "go-analyzer.exe",
-    );
+    // Try extension's bundled binary first (fallback for older installations)
+    const bundled = path.join(ctx.extensionPath, "server", bin);
+    if (fs.existsSync(bundled)) return bundled;
 
-    if (fs.existsSync(primary)) return primary;
-    if (fs.existsSync(secondary)) return secondary;
+    // Look in standard Cargo installation directories
+    const cargoHome = process.env.CARGO_HOME;
+    let cargoBinPaths: string[] = [];
+
+    if (cargoHome) {
+        // Custom CARGO_HOME
+        cargoBinPaths.push(path.join(cargoHome, "bin", bin));
+    }
+
+    if (process.platform === "win32") {
+        // Windows: C:\Users\%USERNAME%\.cargo\bin
+        const userProfile = process.env.USERPROFILE;
+        if (userProfile) {
+            cargoBinPaths.push(path.join(userProfile, ".cargo", "bin", bin));
+        }
+    } else {
+        // Linux/macOS: $HOME/.cargo/bin
+        const home = process.env.HOME;
+        if (home) {
+            cargoBinPaths.push(path.join(home, ".cargo", "bin", bin));
+        }
+    }
+
+    // Try each Cargo bin path
+    for (const cargoPath of cargoBinPaths) {
+        if (fs.existsSync(cargoPath)) {
+            return cargoPath;
+        }
+    }
+
+    // Build error message with all attempted paths
+    const allPaths = [bundled, ...cargoBinPaths];
+    const pathList = allPaths.map(p => `  ${p}`).join('\n');
 
     throw new Error(
-        `Go-Analyzer binary not found.\nTried:\n  ${primary}\n  ${secondary}`,
+        `Go-Analyzer binary not found.\nTried:\n${pathList}\n\nTo install: cargo install go-analyzer\nOr set GO_ANALYZER_PATH environment variable.`
     );
 }
 
 let client: LanguageClient | undefined;
-let extensionActive = true; // Track extension active state
+// Track extension active state
+let extensionActive = true;
 
 // Глобальное управление обработчиками событий
 let disposables: vscode.Disposable[] = [];

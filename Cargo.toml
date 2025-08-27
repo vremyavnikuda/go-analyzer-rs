@@ -9,15 +9,7 @@ homepage = "https://github.com/vremyavnikuda/go-analyzer-rs"
 repository = "https://github.com/vremyavnikuda/go-analyzer-rs"
 documentation = "https://github.com/vremyavnikuda/go-analyzer-rs#readme"
 readme = "README_CRATES.md"
-keywords = [
-    "go",
-    "golang",
-    "lsp",
-    "language-server",
-    "static-analysis",
-    "concurrency",
-    "race-detection",
-]
+keywords = ["go", "lsp", "static-analysis", "concurrency", "race-detection"]
 categories = [
     "development-tools",
     "parser-implementations",

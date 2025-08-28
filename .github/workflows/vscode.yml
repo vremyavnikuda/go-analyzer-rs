@@ -1,0 +1,101 @@
+name: VS Code Extension
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "vscode/**"
+      - ".github/workflows/vscode.yml"
+  pull_request:
+    branches: ["main"]
+    paths:
+      - "vscode/**"
+      - ".github/workflows/vscode.yml"
+
+jobs:
+  build-extension:
+    name: Build VS Code Extension
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "18"
+          cache: "npm"
+          cache-dependency-path: vscode/package-lock.json
+
+      - name: Install dependencies
+        run: |
+          cd vscode
+          npm ci
+
+      - name: Lint TypeScript
+        run: |
+          cd vscode
+          npm run lint
+
+      - name: Check TypeScript types
+        run: |
+          cd vscode
+          npm run check
+
+      - name: Compile TypeScript
+        run: |
+          cd vscode
+          npm run compile
+
+      - name: Run tests
+        run: |
+          cd vscode
+          npm test
+
+      - name: Install vsce
+        run: npm install -g vsce
+
+      - name: Package extension
+        run: |
+          cd vscode
+          vsce package --no-dependencies
+
+      - name: Upload extension artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: vscode-extension
+          path: vscode/*.vsix
+
+  test-extension:
+    name: Test Extension on Multiple OS
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "18"
+          cache: "npm"
+          cache-dependency-path: vscode/package-lock.json
+
+      - name: Install dependencies
+        run: |
+          cd vscode
+          npm ci
+
+      - name: Compile TypeScript
+        run: |
+          cd vscode
+          npm run compile
+
+      - name: Run integration tests
+        run: |
+          cd vscode
+          npm run test:integration
+        env:
+          DISPLAY: ":99.0"

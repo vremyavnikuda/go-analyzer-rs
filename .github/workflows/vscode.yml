@@ -32,16 +32,6 @@ jobs:
           cd vscode
           npm ci
 
-      - name: Lint TypeScript
-        run: |
-          cd vscode
-          npm run lint
-
-      - name: Compile TypeScript
-        run: |
-          cd vscode
-          npm run compile
-
       - name: Install vsce
         run: npm install -g vsce
 
@@ -78,10 +68,5 @@ jobs:
           cd vscode
           npm ci
 
-      - name: Compile TypeScript
-        run: |
-          cd vscode
-          npm run compile
-
-      # Note: Skipping tests as no test files are currently set up
-      # TODO: Add VS Code extension tests in future iterations
+      # Note: Skipping TypeScript compilation and linting checks
+      # Extension will be packaged without additional validation

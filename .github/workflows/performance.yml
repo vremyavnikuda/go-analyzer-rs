@@ -53,11 +53,11 @@ jobs:
             # Add criterion to dev-dependencies if not already present
             if ! grep -q "criterion" Cargo.toml; then
               # Use a more robust method to add the dependency
-              cat >> Cargo.toml << 'EOF'
+              cat >> Cargo.toml << 'EOL'
 
-[dev-dependencies.criterion]
-version = "0.5"
-EOF
+          [dev-dependencies.criterion]
+          version = "0.5"
+          EOL
             fi
           fi
           cargo bench --all-features

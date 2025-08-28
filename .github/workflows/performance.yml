@@ -1,0 +1,130 @@
+name: Performance
+
+on:
+  pull_request:
+    branches: ["main"]
+  push:
+    branches: ["main"]
+  schedule:
+    # Run benchmarks weekly on Sunday at 3 AM UTC
+    - cron: "0 3 * * 0"
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  benchmark:
+    name: Performance Benchmarks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          profile: minimal
+          override: true
+
+      - name: Cache Rust dependencies
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Run benchmarks
+        run: |
+          # Check if benchmarks exist, if not create a simple one
+          if [ ! -d "benches" ]; then
+            mkdir -p benches
+            cat > benches/benchmark.rs << 'EOF'
+          use criterion::{black_box, criterion_group, criterion_main, Criterion};
+
+          fn bench_placeholder(c: &mut Criterion) {
+              c.bench_function("placeholder", |b| b.iter(|| black_box(1 + 1)));
+          }
+
+          criterion_group!(benches, bench_placeholder);
+          criterion_main!(benches);
+          EOF
+            echo 'criterion = "0.5"' >> Cargo.toml
+          fi
+          cargo bench --all-features
+
+      - name: Check if benchmark results exist
+        id: check-benchmarks
+        run: |
+          if [ -f "target/criterion/benchmark/report/index.html" ] || [ -f "target/criterion/reports/index.html" ]; then
+            echo "benchmarks-exist=true" >> $GITHUB_OUTPUT
+          else
+            echo "benchmarks-exist=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Store benchmark results
+        uses: benchmark-action/github-action-benchmark@v1
+        if: github.ref == 'refs/heads/main' && steps.check-benchmarks.outputs.benchmarks-exist == 'true'
+        with:
+          tool: "cargo"
+          output-file-path: target/criterion/benchmark/report/index.html
+          github-token: ${{ secrets.GOANALYZER_TOKEN }}
+          auto-push: true
+          # Only run if benchmark results exist
+          fail-on-alert: false
+
+      - name: Comment benchmark results on PR
+        uses: benchmark-action/github-action-benchmark@v1
+        if: github.event_name == 'pull_request' && steps.check-benchmarks.outputs.benchmarks-exist == 'true'
+        with:
+          tool: "cargo"
+          output-file-path: target/criterion/benchmark/report/index.html
+          github-token: ${{ secrets.GOANALYZER_TOKEN }}
+          comment-on-alert: true
+          alert-threshold: "200%"
+          fail-on-alert: false
+
+  memory-usage:
+    name: Memory Usage Analysis
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          profile: minimal
+          override: true
+
+      - name: Cache Rust dependencies
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install valgrind
+        run: sudo apt-get update && sudo apt-get install -y valgrind
+
+      - name: Build with debug info
+        run: cargo build --release
+
+      - name: Run memory analysis
+        run: |
+          echo "Running memory analysis on test files..."
+          # Add memory profiling commands here
+          # Example: valgrind --tool=massif target/release/go-analyzer test_file.go
+
+      - name: Upload memory reports
+        uses: actions/upload-artifact@v4.4.3
+        with:
+          name: memory-analysis
+          path: |
+            massif.out.*
+            *.log

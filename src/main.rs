@@ -24,16 +24,25 @@ async fn main() {
     #[cfg(not(target_os = "windows"))]
     {
         tokio::spawn(async {
-            let mut sigterm =
-                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).unwrap();
-            let mut sigint =
-                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt()).unwrap();
+            let sigterm_result =
+                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate());
+            let sigint_result =
+                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt());
 
-            tokio::select! {
-                _ = sigterm.recv() => eprintln!("Received SIGTERM, terminating Go Analyzer server..."),
-                _ = sigint.recv() => eprintln!("Received SIGINT, terminating Go Analyzer server..."),
+            match (sigterm_result, sigint_result) {
+                (Ok(mut sigterm), Ok(mut sigint)) => {
+                    tokio::select! {
+                        _ = sigterm.recv() => eprintln!("Received SIGTERM, terminating Go Analyzer server..."),
+                        _ = sigint.recv() => eprintln!("Received SIGINT, terminating Go Analyzer server..."),
+                    }
+                    std::process::exit(0);
+                }
+                _ => {
+                    eprintln!(
+                        "Failed to setup signal handlers, continuing without signal handling"
+                    );
+                }
             }
-            std::process::exit(0);
         });
     }
 

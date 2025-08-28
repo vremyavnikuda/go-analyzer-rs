@@ -29,6 +29,69 @@ The tool helps Go developers write safer and more reliable code by automatically
 - **Node.js** - Extension runtime environment
 - **LSP Client** - Communication with LSP server
 
+### System Architecture Pattern
+
+The system follows a **client-server architecture** implementing the Language Server Protocol (LSP) specification:
+```mermaid
+graph TB
+    subgraph "VS Code Extension (Client)"
+        A[Extension.ts] --> B[Language Client]
+        B --> C[UI Management]
+        C --> D[Status Bar]
+        C --> E[Text Decorations]
+        C --> F[Commands]
+    end
+
+    subgraph "LSP Communication"
+        G[JSON-RPC over stdin/stdout]
+    end
+
+    subgraph "Rust LSP Server"
+        H[Backend.rs] --> I[Analysis Engine]
+        I --> J[Tree-sitter Parser]
+        I --> K[AST Traversal]
+        K --> L[Variable Tracking]
+        K --> M[Race Detection]
+    end
+
+    B -.-> G
+    G -.-> H
+
+    subgraph "Caching Layer"
+        N[Document Cache]
+        O[AST Tree Cache]
+        P[Parser Cache]
+    end
+
+    H --> N
+    H --> O
+    H --> P
+```
+
+### Component Interaction Flow
+
+```mermaid
+sequenceDiagram
+    participant User as VS Code User
+    participant Ext as Extension
+    participant Client as Language Client
+    participant Server as LSP Server
+    participant Parser as tree-sitter
+
+    User->>Ext: Cursor Movement
+    Ext->>Ext: Check Active State
+    Ext->>Ext: Debounce (300ms)
+    Ext->>Client: executeCommand
+    Client->>Server: goanalyzer/cursor
+    Server->>Parser: Parse Go Code
+    Parser-->>Server: AST Tree
+    Server->>Server: Analyze Variables
+    Server->>Server: Detect Race Conditions
+    Server-->>Client: Decoration Objects
+    Client-->>Ext: Analysis Results
+    Ext->>User: Apply Color Decorations
+```
+
 ### **Build and Deployment**
 
 - **Cargo** - Rust build system and dependency management

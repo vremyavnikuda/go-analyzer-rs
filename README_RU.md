@@ -27,6 +27,67 @@
 - **Node.js** - Среда выполнения для расширения
 - **LSP Client** - Коммуникация с LSP-сервером
 
+### Шаблон архитектуры системы
+Система использует **клиент-серверную архитектуру** и соответствует спецификации Language Server Protocol (LSP):
+
+```mermaid
+graph TB
+    subgraph "VS Code Extension (Client)"
+        A[Extension.ts] --> B[Language Client]
+        B --> C[UI Management]
+        C --> D[Status Bar]
+        C --> E[Text Decorations]
+        C --> F[Commands]
+    end
+
+    subgraph "LSP Communication"
+        G[JSON-RPC over stdin/stdout]
+    end
+
+    subgraph "Rust LSP Server"
+        H[Backend.rs] --> I[Analysis Engine]
+        I --> J[Tree-sitter Parser]
+        I --> K[AST Traversal]
+        K --> L[Variable Tracking]
+        K --> M[Race Detection]
+    end
+
+    B -.-> G
+    G -.-> H
+
+    subgraph "Caching Layer"
+        N[Document Cache]
+        O[AST Tree Cache]
+        P[Parser Cache]
+    end
+
+    H --> N
+    H --> O
+    H --> P
+```
+### Поток взаимодействия компонентов
+
+```mermaid
+sequenceDiagram
+    participant User as VS Code User
+    participant Ext as Extension
+    participant Client as Language Client
+    participant Server as LSP Server
+    participant Parser as tree-sitter
+
+    User->>Ext: Cursor Movement
+    Ext->>Ext: Check Active State
+    Ext->>Ext: Debounce (300ms)
+    Ext->>Client: executeCommand
+    Client->>Server: goanalyzer/cursor
+    Server->>Parser: Parse Go Code
+    Parser-->>Server: AST Tree
+    Server->>Server: Analyze Variables
+    Server->>Server: Detect Race Conditions
+    Server-->>Client: Decoration Objects
+    Client-->>Ext: Analysis Results
+    Ext->>User: Apply Color Decorations
+```
 ### **Сборка и развёртывание**
 
 - **Cargo** - Система сборки и управления зависимостями Rust

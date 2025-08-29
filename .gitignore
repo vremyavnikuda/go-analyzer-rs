@@ -7,3 +7,13 @@ target
 .idea
 .vscode/launch.json
 .vscode/settings.json
+
+# Personal development planning
+task.md
+publish-to-crates.ps1
+publish-to-crates.sh
+vscode/image.jpg
+vscode/icon_.png
+vscode/go-analyzer-0.1.0.vsix
+
+doc/GITHUB_LABELS.md

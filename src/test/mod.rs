@@ -1,1 +1,3 @@
-mod test;
+#![allow(clippy::module_inception)]
+
+pub mod test;

@@ -1,14 +1,34 @@
 {
   "name": "go-analyzer",
   "displayName": "Go Analyzer",
-  "description": "Go code analyzer with variable lifecycle tracking",
-  "version": "0.0.1",
+  "description": "Go Analyzer - Advanced static analysis tool for Go development that provides real-time variable lifecycle tracking, data race detection, and visual code flow analysis.",
+  "version": "0.1.0",
+  "icon": "icon.png",
   "engines": {
     "vscode": "^1.60.0"
   },
   "categories": [
-    "Programming Languages"
+    "Programming Languages",
+    "Linters",
+    "Debuggers",
+    "Other"
   ],
+  "keywords": [
+    "go",
+    "golang",
+    "analyzer",
+    "static analysis",
+    "data race",
+    "concurrency",
+    "variable tracking",
+    "goroutine",
+    "code visualization",
+    "debugging",
+    "lifecycle",
+    "pointer analysis"
+  ],
+  "publisher": "vremyavnikuda",
+  "license": "MIT",
   "activationEvents": [
     "onLanguage:go"
   ],
@@ -26,6 +46,26 @@
       {
         "command": "goanalyzer.showGraph",
         "title": "Go Analyzer: Show Graph"
+      },
+      {
+        "command": "goanalyzer.activate",
+        "title": "Go Analyzer: Activate Extension"
+      },
+      {
+        "command": "goanalyzer.deactivate",
+        "title": "Go Analyzer: Deactivate Extension"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "goanalyzer.activate",
+        "key": "shift+alt+s",
+        "when": "editorTextFocus && editorLangId == go"
+      },
+      {
+        "command": "goanalyzer.deactivate",
+        "key": "shift+alt+c",
+        "when": "editorTextFocus && editorLangId == go"
       }
     ],
     "configuration": {
@@ -60,14 +100,35 @@
           "type": "string",
           "default": "red",
           "description": "Color for potential data race warnings"
+        },
+        "goAnalyzer.raceLowColor": {
+          "type": "string",
+          "default": "orange",
+          "description": "Color for low-priority race warnings"
+        },
+        "goAnalyzer.aliasReassignedColor": {
+          "type": "string",
+          "default": "purple",
+          "description": "Color for reassigned alias variables"
+        },
+        "goAnalyzer.aliasCapturedColor": {
+          "type": "string",
+          "default": "magenta",
+          "description": "Color for captured alias variables in closures"
         }
       }
     }
   },
   "scripts": {
-    "vscode:prepublish": "npm run compile",
+    "vscode:prepublish": "npm run compile && npm run copy-server",
     "compile": "tsc -p ./",
-    "watch": "tsc -watch -p ./"
+    "watch": "tsc -watch -p ./",
+    "build": "npm run compile && npm run copy-server",
+    "clean": "rimraf out && rimraf server",
+    "copy-server": "node scripts/copy-server.js",
+    "package": "npm run build && vsce package",
+    "lint": "eslint src --ext ts",
+    "test": "echo \"Warning: No tests configured for VS Code extension yet\" && exit 0"
   },
   "dependencies": {
     "vscode-languageclient": "^8.0.0"
@@ -75,6 +136,11 @@
   "devDependencies": {
     "@types/vscode": "^1.60.0",
     "@types/node": "14.x",
-    "typescript": "^4.3.2"
+    "typescript": "^4.3.2",
+    "rimraf": "^3.0.2",
+    "@typescript-eslint/eslint-plugin": "^5.0.0",
+    "@typescript-eslint/parser": "^5.0.0",
+    "eslint": "^8.0.0",
+    "vsce": "^2.0.0"
   }
 }

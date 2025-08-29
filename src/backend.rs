@@ -1,10 +1,11 @@
 use crate::analysis::{
     build_graph_data, count_entities, determine_race_severity, find_variable_at_position,
-    is_in_goroutine,
+    find_variable_at_position_enhanced, is_in_goroutine,
 };
-use crate::types::{Decoration, DecorationType, GraphData, ProgressNotification};
+use crate::types::{Decoration, DecorationType, ProgressNotification, RaceSeverity};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::time::{Duration, SystemTime};
 use tokio::sync::Mutex;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer};
@@ -22,18 +23,53 @@ impl tower_lsp::lsp_types::notification::Notification for IndexingStatusNotifica
 // Параметры для уведомления о статусе индексации
 #[derive(Serialize, Deserialize)]
 pub struct IndexingStatusParams {
-    pub variables: usize,  // Количество переменных
-    pub functions: usize,  // Количество функций
-    pub channels: usize,   // Количество каналов
-    pub goroutines: usize, // Количество горутин
+    // Количество переменных
+    pub variables: usize,
+    // Количество функций
+    pub functions: usize,
+    // Количество каналов
+    pub channels: usize,
+    // Количество горутин
+    pub goroutines: usize,
+}
+
+// Константы для управления кэшами
+const MAX_CACHED_TREES: usize = 20;
+const MAX_CACHED_DOCUMENTS: usize = 50;
+// 5 минут
+const CACHE_TTL_SECONDS: u64 = 300;
+
+// Структура для элемента кэша с TTL
+#[derive(Clone)]
+pub struct CacheEntry<T> {
+    data: T,
+    timestamp: SystemTime,
+}
+
+impl<T> CacheEntry<T> {
+    fn new(data: T) -> Self {
+        Self {
+            data,
+            timestamp: SystemTime::now(),
+        }
+    }
+
+    fn is_expired(&self) -> bool {
+        self.timestamp.elapsed().unwrap_or(Duration::from_secs(0))
+            > Duration::from_secs(CACHE_TTL_SECONDS)
+    }
 }
 
 // Основная структура Backend, реализующая сервер LSP
 pub struct Backend {
-    pub client: Client, // Клиент LSP для отправки уведомлений и сообщений
-    pub documents: Mutex<HashMap<Url, String>>, // Кэш открытых документов (URI -> текст)
-    pub parser: Mutex<Parser>, // Парсер tree-sitter для Go
-    pub trees: Mutex<HashMap<Url, Tree>>, // Кэш синтаксических деревьев (URI -> дерево)
+    // Клиент LSP для отправки уведомлений и сообщений
+    pub client: Client,
+    // Кэш открытых документов с TTL
+    pub documents: Mutex<HashMap<Url, CacheEntry<String>>>,
+    // Парсер tree-sitter для Go
+    pub parser: Mutex<Parser>,
+    // Кэш синтаксических деревьев с TTL
+    pub trees: Mutex<HashMap<Url, CacheEntry<Tree>>>,
 }
 
 impl Backend {
@@ -52,48 +88,144 @@ impl Backend {
         }
     }
 
+    /// Очистить истекшие элементы из кэша
+    async fn cleanup_expired_cache(&self) {
+        // Очистка кэша документов
+        {
+            let mut docs = self.documents.lock().await;
+            docs.retain(|_, entry| !entry.is_expired());
+        }
+
+        // Очистка кэша деревьев
+        {
+            let mut trees = self.trees.lock().await;
+            trees.retain(|_, entry| !entry.is_expired());
+        }
+    }
+
+    /// Принудительно ограничить размер кэша по LRU принципу
+    async fn enforce_cache_limits(&self) {
+        // Ограничение размера кэша документов
+        {
+            let mut docs = self.documents.lock().await;
+            if docs.len() > MAX_CACHED_DOCUMENTS {
+                // Простая LRU: удаляем самые старые элементы
+                let mut entries: Vec<_> =
+                    docs.iter().map(|(k, v)| (k.clone(), v.timestamp)).collect();
+                entries.sort_by_key(|(_, timestamp)| *timestamp);
+
+                let to_remove = entries.len() - MAX_CACHED_DOCUMENTS;
+                for (uri, _) in entries.into_iter().take(to_remove) {
+                    docs.remove(&uri);
+                }
+            }
+        }
+
+        // Ограничение размера кэша деревьев
+        {
+            let mut trees = self.trees.lock().await;
+            if trees.len() > MAX_CACHED_TREES {
+                let mut entries: Vec<_> = trees
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.timestamp))
+                    .collect();
+                entries.sort_by_key(|(_, timestamp)| *timestamp);
+
+                let to_remove = entries.len() - MAX_CACHED_TREES;
+                for (uri, _) in entries.into_iter().take(to_remove) {
+                    trees.remove(&uri);
+                }
+            }
+        }
+    }
+
     /// Получить или обновить дерево для документа (с кэшированием)
     pub async fn parse_document_with_cache(&self, uri: &Url, code: &str) -> Option<Tree> {
+        // Периодическая очистка истекших элементов
+        self.cleanup_expired_cache().await;
+
         let mut parser = self.parser.lock().await;
         let mut trees = self.trees.lock().await;
-        let prev_tree = trees.get(uri);
+
+        let prev_tree = trees.get(uri).map(|entry| &entry.data);
+
         // Используем инкрементальный парсинг, если есть предыдущее дерево
-        let new_tree = if let Some(prev) = prev_tree {
+        let new_tree = match if let Some(prev) = prev_tree {
             parser.parse(code, Some(prev))
         } else {
             parser.parse(code, None)
+        } {
+            Some(tree) => tree,
+            None => {
+                eprintln!("Failed to parse document: {}", uri);
+                return None;
+            }
         };
-        // Кэшируем новое дерево, если оно успешно построено
-        if let Some(ref tree) = new_tree {
-            trees.insert(uri.clone(), tree.clone());
-        }
-        new_tree
+
+        // Кэшируем новое дерево с TTL
+        trees.insert(uri.clone(), CacheEntry::new(new_tree.clone()));
+        drop(trees);
+        drop(parser);
+
+        // Принудительно ограничиваем размер кэша
+        self.enforce_cache_limits().await;
+
+        Some(new_tree)
     }
 
-    /// Получить дерево из кэша (если оно есть)
+    /// Получить дерево из кэша (если оно есть и не истекло)
     pub async fn get_tree_from_cache(&self, uri: &Url) -> Option<Tree> {
         let trees = self.trees.lock().await;
-        trees.get(uri).cloned()
+        if let Some(entry) = trees.get(uri) {
+            if !entry.is_expired() {
+                Some(entry.data.clone())
+            } else {
+                None // Истекший элемент будет удален при следующей очистке
+            }
+        } else {
+            None
+        }
     }
 
     /// Отправить клиенту статус индексации (количество сущностей в файле)
     pub async fn send_indexing_status(&self, uri: &Url) {
-        let docs = self.documents.lock().await;
-        if let Some(code) = docs.get(uri) {
-            let tree = self.parse_document_with_cache(uri, code).await;
-            if let Some(tree) = tree {
-                let counts = count_entities(&tree, code);
-                let params = IndexingStatusParams {
-                    variables: counts.variables,
-                    functions: counts.functions,
-                    channels: counts.channels,
-                    goroutines: counts.goroutines,
-                };
-                self.client
-                    .send_notification::<IndexingStatusNotification>(params)
-                    .await;
+        let code = {
+            let docs = self.documents.lock().await;
+            match docs.get(uri) {
+                Some(entry) if !entry.is_expired() => entry.data.clone(),
+                _ => {
+                    eprintln!("Document cache entry expired or missing for: {}", uri);
+                    return;
+                }
             }
-        }
+        }; // docs lock is released here
+
+        let tree = match self.parse_document_with_cache(uri, &code).await {
+            Some(tree) => tree,
+            None => {
+                eprintln!("Failed to parse document for indexing status: {}", uri);
+                return;
+            }
+        };
+
+        let counts = match std::panic::catch_unwind(|| count_entities(&tree, &code)) {
+            Ok(counts) => counts,
+            Err(e) => {
+                eprintln!("Panic occurred while counting entities: {:?}", e);
+                return;
+            }
+        };
+
+        let params = IndexingStatusParams {
+            variables: counts.variables,
+            functions: counts.functions,
+            channels: counts.channels,
+            goroutines: counts.goroutines,
+        };
+
+        self.client
+            .send_notification::<IndexingStatusNotification>(params)
+            .await;
     }
 }
 
@@ -108,7 +240,10 @@ impl LanguageServer for Backend {
             capabilities: ServerCapabilities {
                 hover_provider: Some(HoverProviderCapability::Simple(true)), // поддержка hover
                 execute_command_provider: Some(ExecuteCommandOptions {
-                    commands: vec!["goanalyzer/cursor".to_string()], // поддерживаемая команда
+                    commands: vec![
+                        "goanalyzer/cursor".to_string(),
+                        "goanalyzer/graph".to_string(),
+                    ], // поддерживаемые команды
                     ..Default::default()
                 }),
                 text_document_sync: Some(TextDocumentSyncCapability::Kind(
@@ -130,8 +265,47 @@ impl LanguageServer for Backend {
             .await;
     }
 
-    // Завершение работы сервера
+    // Завершение работы сервера - правильная очистка ресурсов
     async fn shutdown(&self) -> tower_lsp::jsonrpc::Result<()> {
+        self.client
+            .log_message(MessageType::INFO, "Go Analyzer server shutdown initiated")
+            .await;
+
+        // Очищаем все кэши и освобождаем ресурсы
+        {
+            let mut docs = self.documents.lock().await;
+            let docs_count = docs.len();
+            docs.clear();
+            eprintln!("Cleared {} document cache entries", docs_count);
+        }
+        {
+            let mut trees = self.trees.lock().await;
+            let trees_count = trees.len();
+            trees.clear();
+            eprintln!("Cleared {} AST tree cache entries", trees_count);
+        }
+
+        // Освобождаем парсер
+        {
+            let _parser = self.parser.lock().await;
+            eprintln!("Released tree-sitter parser resources");
+        }
+
+        self.client
+            .log_message(MessageType::INFO, "Go Analyzer server shutdown completed")
+            .await;
+
+        // На Windows добавляем принудительный выход для предотвращения зависших процессов
+        #[cfg(target_os = "windows")]
+        {
+            tokio::spawn(async {
+                eprintln!("Windows: Initiating graceful shutdown in 100ms...");
+                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                eprintln!("Windows: Forcing process exit");
+                std::process::exit(0);
+            });
+        }
+
         Ok(())
     }
 
@@ -140,9 +314,13 @@ impl LanguageServer for Backend {
         let mut docs = self.documents.lock().await;
         docs.insert(
             params.text_document.uri.clone(),
-            params.text_document.text.clone(),
+            CacheEntry::new(params.text_document.text.clone()),
         );
         drop(docs);
+
+        // Принудительно ограничиваем размер кэша
+        self.enforce_cache_limits().await;
+
         // Парсим и кэшируем дерево при открытии
         self.parse_document_with_cache(&params.text_document.uri, &params.text_document.text)
             .await;
@@ -154,66 +332,87 @@ impl LanguageServer for Backend {
         let mut docs = self.documents.lock().await;
         if let Some(doc) = docs.get_mut(&params.text_document.uri) {
             if let Some(change) = params.content_changes.into_iter().next_back() {
-                *doc = change.text.clone();
+                // Обновляем запись с новым временным штампом
+                *doc = CacheEntry::new(change.text.clone());
+                let new_text = change.text.clone();
+                drop(docs);
+
                 // Инкрементальное обновление дерева
-                self.parse_document_with_cache(&params.text_document.uri, &change.text)
+                self.parse_document_with_cache(&params.text_document.uri, &new_text)
                     .await;
+                self.send_indexing_status(&params.text_document.uri).await;
+                return;
             }
         }
         drop(docs);
-        self.send_indexing_status(&params.text_document.uri).await;
     }
 
     // Hover-запрос: ищем переменную под курсором и возвращаем информацию о ней
     async fn hover(&self, params: HoverParams) -> tower_lsp::jsonrpc::Result<Option<Hover>> {
         let uri = params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
+
         let docs = self.documents.lock().await;
+
         let code = match docs.get(&uri) {
-            Some(text) => text,
-            None => {
+            Some(entry) if !entry.is_expired() => entry.data.clone(),
+            _ => {
                 return Ok(None);
             }
         };
+        // Освобождаем блокировку раньше
+        drop(docs);
+
         // Получаем дерево из кэша или парсим заново, если его нет
-        let tree = self.get_tree_from_cache(&uri).await.or_else(|| {
-            // Если нет в кэше, парсим и кэшируем
-            futures::executor::block_on(self.parse_document_with_cache(&uri, code))
-        });
-        let tree = match tree {
+        let tree = match self.get_tree_from_cache(&uri).await {
             Some(tree) => tree,
-            None => {
+            None => match self.parse_document_with_cache(&uri, &code).await {
+                Some(tree) => tree,
+                None => {
+                    eprintln!("Failed to parse document for hover: {}", uri);
+                    return Ok(None);
+                }
+            },
+        };
+
+        // Ищем переменную под курсором с улучшенным определением позиции
+        let var_info = match std::panic::catch_unwind(|| {
+            // Try enhanced detection first, fallback to standard
+            find_variable_at_position_enhanced(&tree, &code, position)
+                .or_else(|| find_variable_at_position(&tree, &code, position))
+        }) {
+            Ok(Some(var_info)) => var_info,
+            Ok(None) => return Ok(None),
+            Err(e) => {
+                eprintln!("Panic occurred in find_variable_at_position: {:?}", e);
                 return Ok(None);
             }
         };
 
-        // Ищем переменную под курсором
-        if let Some(var_info) = find_variable_at_position(&tree, code, position) {
-            let mut markdown = format!(
-                "**Variable**: `{}`\n\n**Declared at**: line {}\n**Type**: {}\n**Uses**: {}\n",
-                var_info.name,
-                var_info.declaration.start.line + 1,
-                if var_info.is_pointer {
-                    "Pointer"
-                } else {
-                    "Value"
-                },
-                var_info.uses.len()
-            );
-            // Если есть потенциальная гонка данных — добавляем предупреждение
-            if var_info.potential_race {
-                markdown.push_str("**Warning**: Potential data race detected!\n");
-            }
-            Ok(Some(Hover {
-                contents: HoverContents::Markup(MarkupContent {
-                    kind: MarkupKind::Markdown,
-                    value: markdown,
-                }),
-                range: Some(var_info.declaration),
-            }))
-        } else {
-            Ok(None)
+        let mut markdown = format!(
+            "**Variable**: `{}`\n\n**Declared at**: line {}\n**Type**: {}\n**Uses**: {}\n",
+            var_info.name,
+            var_info.declaration.start.line + 1,
+            if var_info.is_pointer {
+                "Pointer"
+            } else {
+                "Value"
+            },
+            var_info.uses.len()
+        );
+
+        // Если есть потенциальная гонка данных — добавляем предупреждение
+        if var_info.potential_race {
+            markdown.push_str("**Warning**: Potential data race detected!\n");
         }
+
+        Ok(Some(Hover {
+            contents: HoverContents::Markup(MarkupContent {
+                kind: MarkupKind::Markdown,
+                value: markdown,
+            }),
+            range: Some(var_info.declaration),
+        }))
     }
 
     // Обработка команды goanalyzer/cursor: анализ переменной под курсором и отправка декораций
@@ -228,64 +427,190 @@ impl LanguageServer for Backend {
             self.client
                 .send_notification::<ProgressNotification>("Starting analysis...".to_string())
                 .await;
+
             // Десериализуем параметры команды (позиция курсора)
-            let args: TextDocumentPositionParams =
-                serde_json::from_value(params.arguments[0].clone()).map_err(|e| {
-                    tower_lsp::jsonrpc::Error::invalid_params(format!("Invalid arguments: {}", e))
-                })?;
+            if params.arguments.is_empty() {
+                self.client
+                    .send_notification::<ProgressNotification>("No arguments provided".to_string())
+                    .await;
+                return Ok(None);
+            }
+
+            let args: TextDocumentPositionParams = match params
+                .arguments
+                .first()
+                .ok_or_else(|| {
+                    tower_lsp::jsonrpc::Error::invalid_params("Missing arguments".to_string())
+                })
+                .and_then(|arg| {
+                    serde_json::from_value(arg.clone()).map_err(|e| {
+                        tower_lsp::jsonrpc::Error::invalid_params(format!(
+                            "Invalid arguments: {}",
+                            e
+                        ))
+                    })
+                }) {
+                Ok(args) => args,
+                Err(e) => {
+                    self.client
+                        .send_notification::<ProgressNotification>("Invalid arguments".to_string())
+                        .await;
+                    return Err(e);
+                }
+            };
+
             let uri = args.text_document.uri;
             let position = args.position;
-            let docs = self.documents.lock().await;
-            let code = match docs.get(&uri) {
-                Some(text) => text,
-                None => {
-                    self.client
-                        .send_notification::<ProgressNotification>("No document found".to_string())
-                        .await;
-                    return Ok(None);
+
+            let code = {
+                let docs = self.documents.lock().await;
+                match docs.get(&uri) {
+                    Some(entry) if !entry.is_expired() => entry.data.clone(),
+                    _ => {
+                        self.client
+                            .send_notification::<ProgressNotification>(
+                                "No document found or expired".to_string(),
+                            )
+                            .await;
+                        return Ok(None);
+                    }
                 }
             };
+
             // Получаем дерево из кэша или парсим заново
-            let tree = self.get_tree_from_cache(&uri).await.or_else(|| {
-                futures::executor::block_on(self.parse_document_with_cache(&uri, code))
-            });
-            let tree = match tree {
+            let tree = match self.get_tree_from_cache(&uri).await {
                 Some(tree) => tree,
-                None => {
+                None => match self.parse_document_with_cache(&uri, &code).await {
+                    Some(tree) => tree,
+                    None => {
+                        self.client
+                            .send_notification::<ProgressNotification>(
+                                "Failed to parse document".to_string(),
+                            )
+                            .await;
+                        return Ok(None);
+                    }
+                },
+            };
+
+            // Ищем переменную под курсором с улучшенным определением позиции
+            let mut var_info = match std::panic::catch_unwind(|| {
+                // First try the enhanced detection
+                find_variable_at_position_enhanced(&tree, &code, position).or_else(|| {
+                    // Fallback to standard detection
+                    find_variable_at_position(&tree, &code, position)
+                })
+            }) {
+                Ok(Some(var_info)) => var_info,
+                Ok(None) => {
                     self.client
-                        .send_notification::<ProgressNotification>(
-                            "Failed to parse document".to_string(),
-                        )
+                        .send_notification::<ProgressNotification>("No variable found".to_string())
+                        .await;
+                    return Ok(None);
+                }
+                Err(e) => {
+                    eprintln!("Panic occurred in find_variable_at_position: {:?}", e);
+                    self.client
+                        .send_notification::<ProgressNotification>("Analysis error".to_string())
                         .await;
                     return Ok(None);
                 }
             };
 
-            // Ищем переменную под курсором
-            if let Some(mut var_info) = find_variable_at_position(&tree, code, position) {
-                let mut decorations = vec![];
-                // Декорация для объявления переменной
-                decorations.push(Decoration {
-                    range: var_info.declaration,
-                    kind: DecorationType::Declaration,
-                    hover_text: format!("Declaration of `{}`", var_info.name),
-                });
+            let mut decorations = vec![];
 
-                // Декорации для всех использований переменной
-                for use_range in var_info.uses.iter() {
-                    // По умолчанию: обычное использование или указатель
-                    let mut decoration_kind = if var_info.is_pointer {
-                        DecorationType::Pointer
-                    } else {
-                        DecorationType::Use
+            // Декорация для объявления переменной
+            decorations.push(Decoration {
+                range: var_info.declaration,
+                kind: DecorationType::Declaration,
+                hover_text: format!("Declaration of `{}`", var_info.name),
+            });
+
+            // Декорации для всех использований переменной
+            for use_range in var_info.uses.iter() {
+                // По умолчанию: обычное использование или указатель
+                let mut decoration_kind = if var_info.is_pointer {
+                    DecorationType::Pointer
+                } else {
+                    DecorationType::Use
+                };
+
+                let mut hover_text = format!("Use of `{}`", var_info.name);
+
+                // Check for variable reassignment
+                let is_reassignment = match std::panic::catch_unwind(|| {
+                    crate::analysis::is_variable_reassignment(
+                        &tree,
+                        &var_info.name,
+                        *use_range,
+                        &code,
+                    )
+                }) {
+                    Ok(result) => result,
+                    Err(e) => {
+                        eprintln!("Panic occurred in is_variable_reassignment: {:?}", e);
+                        // Safe fallback
+                        false
+                    }
+                };
+
+                if is_reassignment {
+                    decoration_kind = DecorationType::AliasReassigned;
+                    hover_text = format!("Reassignment of `{}`", var_info.name);
+                }
+                // Check for variable capture in closure/goroutine
+                else {
+                    let is_captured = match std::panic::catch_unwind(|| {
+                        crate::analysis::is_variable_captured(
+                            &tree,
+                            &var_info.name,
+                            *use_range,
+                            var_info.declaration,
+                        )
+                    }) {
+                        Ok(result) => result,
+                        Err(e) => {
+                            eprintln!("Panic occurred in is_variable_captured: {:?}", e);
+                            // Safe fallback
+                            false
+                        }
                     };
 
-                    let mut hover_text = format!("Use of `{}`", var_info.name);
+                    if is_captured {
+                        decoration_kind = DecorationType::AliasCaptured;
+                        hover_text = format!("Captured `{}` in closure/goroutine", var_info.name);
+                    }
+                }
 
-                    // Если использование внутри горутины — определяем приоритет гонки
-                    if is_in_goroutine(&tree, *use_range) {
+                // Если использование внутри горутины — определяем приоритет гонки
+                // Only check for races if it's not already marked as reassignment or capture
+                if !matches!(
+                    decoration_kind,
+                    DecorationType::AliasReassigned | DecorationType::AliasCaptured
+                ) {
+                    let is_in_goroutine_result =
+                        match std::panic::catch_unwind(|| is_in_goroutine(&tree, *use_range)) {
+                            Ok(result) => result,
+                            Err(e) => {
+                                eprintln!("Panic occurred in is_in_goroutine: {:?}", e);
+                                // Safe fallback
+                                false
+                            }
+                        };
+
+                    if is_in_goroutine_result {
                         // Определяем приоритет гонки на основе контекста
-                        let race_severity = determine_race_severity(&tree, *use_range, &code);
+                        let race_severity = match std::panic::catch_unwind(|| {
+                            determine_race_severity(&tree, *use_range, &code)
+                        }) {
+                            Ok(severity) => severity,
+                            Err(e) => {
+                                eprintln!("Panic occurred in determine_race_severity: {:?}", e);
+                                // Safe fallback
+                                RaceSeverity::Medium
+                            }
+                        };
+
                         var_info.race_severity = race_severity.clone();
 
                         match race_severity {
@@ -313,49 +638,70 @@ impl LanguageServer for Backend {
                         }
                         var_info.potential_race = true;
                     }
-
-                    decorations.push(Decoration {
-                        range: *use_range,
-                        kind: decoration_kind,
-                        hover_text,
-                    });
                 }
 
-                // Сериализуем декорации и отправляем клиенту
-                let value = serde_json::to_value(&decorations)
-                    .map_err(|_| tower_lsp::jsonrpc::Error::internal_error())?;
-                self.client
-                    .send_notification::<ProgressNotification>("Analysis complete".to_string())
-                    .await;
-                return Ok(Some(value));
+                decorations.push(Decoration {
+                    range: *use_range,
+                    kind: decoration_kind,
+                    hover_text,
+                });
             }
-            // Если переменная не найдена — отправляем уведомление
+
+            // Сериализуем декорации и отправляем клиенту
+            let value = match serde_json::to_value(&decorations) {
+                Ok(value) => value,
+                Err(e) => {
+                    eprintln!("Failed to serialize decorations: {}", e);
+                    self.client
+                        .send_notification::<ProgressNotification>(
+                            "Serialization error".to_string(),
+                        )
+                        .await;
+                    return Err(tower_lsp::jsonrpc::Error::internal_error());
+                }
+            };
+
             self.client
-                .send_notification::<ProgressNotification>("No variable found".to_string())
+                .send_notification::<ProgressNotification>("Analysis complete".to_string())
                 .await;
+            return Ok(Some(value));
         }
         // Новый метод: goanalyzer/graph
         else if params.command == "goanalyzer/graph" {
             self.client
                 .log_message(MessageType::INFO, "Executing goanalyzer/graph")
                 .await;
-            let args: TextDocumentIdentifier = serde_json::from_value(params.arguments[0].clone())
-                .map_err(|e| {
-                    tower_lsp::jsonrpc::Error::invalid_params(format!("Invalid arguments: {}", e))
+            let args: TextDocumentIdentifier = params
+                .arguments
+                .first()
+                .ok_or_else(|| {
+                    tower_lsp::jsonrpc::Error::invalid_params("Missing arguments".to_string())
+                })
+                .and_then(|arg| {
+                    serde_json::from_value(arg.clone()).map_err(|e| {
+                        tower_lsp::jsonrpc::Error::invalid_params(format!(
+                            "Invalid arguments: {}",
+                            e
+                        ))
+                    })
                 })?;
             let uri = args.uri;
             let docs = self.documents.lock().await;
             let code = match docs.get(&uri) {
-                Some(text) => text,
-                None => {
+                Some(entry) if !entry.is_expired() => entry.data.clone(),
+                _ => {
                     self.client
-                        .send_notification::<ProgressNotification>("No document found".to_string())
+                        .send_notification::<ProgressNotification>(
+                            "No document found or expired".to_string(),
+                        )
                         .await;
                     return Ok(None);
                 }
             };
+            // Освобождаем блокировку раньше
+            drop(docs);
             let tree = self.get_tree_from_cache(&uri).await.or_else(|| {
-                futures::executor::block_on(self.parse_document_with_cache(&uri, code))
+                futures::executor::block_on(self.parse_document_with_cache(&uri, &code))
             });
             let tree = match tree {
                 Some(tree) => tree,
@@ -368,7 +714,7 @@ impl LanguageServer for Backend {
                     return Ok(None);
                 }
             };
-            let graph = build_graph_data(&tree, code);
+            let graph = build_graph_data(&tree, &code);
             let value = serde_json::to_value(&graph)
                 .map_err(|_| tower_lsp::jsonrpc::Error::internal_error())?;
             self.client

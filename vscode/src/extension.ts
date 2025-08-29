@@ -11,36 +11,104 @@ import {
 import * as path from "path";
 import * as fs from "fs";
 
-/* ────────────────────────────────────────────────────────────────────────── */
-/*  Выбор бинарника                                                          */
-/* ────────────────────────────────────────────────────────────────────────── */
 function resolveServerPath(ctx: vscode.ExtensionContext): string {
+    // Check environment variable first (allows user override)
     const env = process.env.GO_ANALYZER_PATH;
     if (env && fs.existsSync(env)) return env;
 
     const bin = process.platform === "win32"
-        ? "go-analyzer-rs.exe"
-        : "go-analyzer-rs";
+        ? "go-analyzer.exe"
+        : "go-analyzer";
 
-    const primary = path.join(ctx.extensionPath, "server", bin);
-    const secondary = path.join(
-        ctx.extensionPath,
-        "server",
-        bin.endsWith(".exe") ? "go-analyzer-rs" : "go-analyzer-rs.exe",
-    );
+    // Try extension's bundled binary first (fallback for older installations)
+    const bundled = path.join(ctx.extensionPath, "server", bin);
+    if (fs.existsSync(bundled)) return bundled;
 
-    if (fs.existsSync(primary)) return primary;
-    if (fs.existsSync(secondary)) return secondary;
+    // Look in standard Cargo installation directories
+    const cargoHome = process.env.CARGO_HOME;
+    let cargoBinPaths: string[] = [];
+
+    if (cargoHome) {
+        // Custom CARGO_HOME
+        cargoBinPaths.push(path.join(cargoHome, "bin", bin));
+    }
+
+    if (process.platform === "win32") {
+        // Windows: C:\Users\%USERNAME%\.cargo\bin
+        const userProfile = process.env.USERPROFILE;
+        if (userProfile) {
+            cargoBinPaths.push(path.join(userProfile, ".cargo", "bin", bin));
+        }
+    } else {
+        // Linux/macOS: $HOME/.cargo/bin
+        const home = process.env.HOME;
+        if (home) {
+            cargoBinPaths.push(path.join(home, ".cargo", "bin", bin));
+        }
+    }
+
+    // Try each Cargo bin path
+    for (const cargoPath of cargoBinPaths) {
+        if (fs.existsSync(cargoPath)) {
+            return cargoPath;
+        }
+    }
+
+    // Build error message with all attempted paths
+    const allPaths = [bundled, ...cargoBinPaths];
+    const pathList = allPaths.map(p => `  ${p}`).join('\n');
 
     throw new Error(
-        `Go-Analyzer binary not found.\nTried:\n  ${primary}\n  ${secondary}`,
+        `Go-Analyzer binary not found.\nTried:\n${pathList}\n\nTo install: cargo install go-analyzer\nOr set GO_ANALYZER_PATH environment variable.`
     );
 }
 
-/* ────────────────────────────────────────────────────────────────────────── */
-/*  Глобальное состояние                                                     */
-/* ────────────────────────────────────────────────────────────────────────── */
 let client: LanguageClient | undefined;
+// Track extension active state
+let extensionActive = true;
+
+// Глобальное управление обработчиками событий
+let disposables: vscode.Disposable[] = [];
+let cursorDisp: vscode.Disposable | undefined;
+let lastPos: vscode.Position | undefined;
+let timeoutHandle: NodeJS.Timeout | undefined;
+
+// Функция для очистки всех обработчиков событий
+function cleanupEventHandlers() {
+    console.log(`Cleaning up ${disposables.length} event handlers`);
+    disposables.forEach(d => {
+        try {
+            d.dispose();
+        } catch (error) {
+            console.error("Error disposing event handler:", error);
+        }
+    });
+    disposables = [];
+
+    // Очистка обработчика курсора
+    if (cursorDisp) {
+        try {
+            cursorDisp.dispose();
+        } catch (error) {
+            console.error("Error disposing cursor handler:", error);
+        }
+        cursorDisp = undefined;
+    }
+
+    // Очистка таймеров
+    if (timeoutHandle) {
+        clearTimeout(timeoutHandle);
+        timeoutHandle = undefined;
+    }
+
+    lastPos = undefined;
+}
+
+// Функция для добавления обработчика в список
+function addDisposable(disposable: vscode.Disposable) {
+    disposables.push(disposable);
+    return disposable;
+}
 
 const lastStatus = {
     variables: 0,
@@ -51,11 +119,12 @@ const lastStatus = {
 
 interface Decoration {
     range: vscode.Range;
-    kind: "Declaration" | "Use" | "Pointer" | "Race" | "RaceLow";
-    hoverMessage: string;
+    kind: "Declaration" | "Use" | "Pointer" | "Race" | "RaceLow" | "AliasReassigned" | "AliasCaptured";
+    // Changed from hoverMessage to match server
+    hover_text: string;
 }
 
-const ProgressNotification = new NotificationType<{ message: string }>(
+const ProgressNotification = new NotificationType<string>(
     "goanalyzer/progress",
 );
 const IndexingStatusNotification = new NotificationType<{
@@ -65,11 +134,11 @@ const IndexingStatusNotification = new NotificationType<{
     goroutines: number;
 }>("goanalyzer/indexingStatus");
 
-/* ────────────────────────────────────────────────────────────────────────── */
-/*  Активация                                                                */
-/* ────────────────────────────────────────────────────────────────────────── */
 export function activate(context: vscode.ExtensionContext) {
-    /* -------- запуск сервера -------- */
+    /* -------- очистка при старте -------- */
+    // Очищаем старые обработчики при повторной активации
+    cleanupEventHandlers();
+
     const serverModule = resolveServerPath(context);
     console.log(`Launching Go-Analyzer server: ${serverModule}`);
 
@@ -91,17 +160,24 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.StatusBarAlignment.Right,
         100,
     );
-    statusBar.text = "Go Analyzer";
 
-    const updateTooltip = () => {
-        statusBar.tooltip = [
+    const updateStatusBar = () => {
+        statusBar.text = extensionActive ? "Go Analyzer ✅" : "Go Analyzer ❌";
+        statusBar.tooltip = extensionActive
+            ? `Active - Analysis enabled\n${getStatusTooltip()}`
+            : `Inactive - Analysis disabled\n${getStatusTooltip()}`;
+    };
+
+    const getStatusTooltip = () => {
+        return [
             `Переменные: ${lastStatus.variables}`,
             `Функции: ${lastStatus.functions}`,
             `Каналы: ${lastStatus.channels}`,
             `Горутины: ${lastStatus.goroutines}`,
         ].join("\n");
     };
-    updateTooltip();
+
+    updateStatusBar();
     statusBar.show();
     context.subscriptions.push(statusBar);
 
@@ -111,11 +187,11 @@ export function activate(context: vscode.ExtensionContext) {
         lastStatus.functions = p.functions;
         lastStatus.channels = p.channels;
         lastStatus.goroutines = p.goroutines;
-        updateTooltip();
+        updateStatusBar();
     });
 
-    client.onNotification(ProgressNotification, p => {
-        vscode.window.showInformationMessage(p.message);
+    client.onNotification(ProgressNotification, message => {
+        vscode.window.showInformationMessage(message);
     });
 
     /* -------- типы декораций -------- */
@@ -153,12 +229,29 @@ export function activate(context: vscode.ExtensionContext) {
             overviewRulerColor: vscode.workspace.getConfiguration("goAnalyzer").get("raceLowColor", "orange"),
             overviewRulerLane: vscode.OverviewRulerLane.Right,
         }),
+        AliasReassigned: vscode.window.createTextEditorDecorationType({
+            textDecoration: "underline",
+            color: cfg("aliasReassignedColor", "purple"),
+            overviewRulerColor: cfg("aliasReassignedColor", "purple"),
+            overviewRulerLane: vscode.OverviewRulerLane.Right,
+        }),
+        AliasCaptured: vscode.window.createTextEditorDecorationType({
+            textDecoration: "underline",
+            color: cfg("aliasCapturedColor", "magenta"),
+            overviewRulerColor: cfg("aliasCapturedColor", "magenta"),
+            overviewRulerLane: vscode.OverviewRulerLane.Right,
+        }),
     };
 
     /* -------- команда showLifecycle -------- */
     const lifecycleCmd = vscode.commands.registerCommand(
         "goanalyzer.showLifecycle",
         async () => {
+            if (!extensionActive) {
+                vscode.window.showWarningMessage("Go Analyzer is deactivated. Use Shift+Alt+S to activate.");
+                return;
+            }
+
             const editor = vscode.window.activeTextEditor;
             if (!editor || editor.document.languageId !== "go") {
                 vscode.window.showErrorMessage("No Go editor is active.");
@@ -198,13 +291,15 @@ export function activate(context: vscode.ExtensionContext) {
                                 Pointer: [],
                                 Race: [],
                                 RaceLow: [],
+                                AliasReassigned: [],
+                                AliasCaptured: [],
                             };
                             for (const d of resp) {
                                 const range = new vscode.Range(
                                     new vscode.Position(d.range.start.line, d.range.start.character),
                                     new vscode.Position(d.range.end.line, d.range.end.character),
                                 );
-                                byType[d.kind].push({ range, hoverMessage: d.hoverMessage });
+                                byType[d.kind].push({ range, hoverMessage: d.hover_text });
                             }
                             for (const [k, decos] of Object.entries(byType)) {
                                 editor.setDecorations(decorationTypes[k as keyof typeof decorationTypes], decos);
@@ -222,6 +317,99 @@ export function activate(context: vscode.ExtensionContext) {
     );
     context.subscriptions.push(lifecycleCmd);
 
+    /* -------- команды активации/деактивации -------- */
+    const activateCmd = vscode.commands.registerCommand(
+        "goanalyzer.activate",
+        async () => {
+            extensionActive = true;
+            updateStatusBar();
+
+            // Restart LSP client if it was stopped
+            if (!client || client.state !== 2) { // Not running
+                try {
+                    console.log("Starting Go Analyzer LSP server...");
+
+                    const serverModule = resolveServerPath(context);
+                    const serverOptions: ServerOptions = {
+                        run: { command: serverModule, transport: TransportKind.stdio } as Executable,
+                        debug: { command: serverModule, transport: TransportKind.stdio } as Executable,
+                    };
+
+                    const clientOptions: LanguageClientOptions = {
+                        documentSelector: [{ scheme: "file", language: "go" }],
+                        synchronize: { fileEvents: vscode.workspace.createFileSystemWatcher("**/*.go") },
+                        progressOnInitialization: true,
+                    };
+
+                    client = new LanguageClient("goAnalyzer", "Go Analyzer", serverOptions, clientOptions);
+
+                    // Re-register notifications
+                    client.onNotification(IndexingStatusNotification, p => {
+                        lastStatus.variables = p.variables;
+                        lastStatus.functions = p.functions;
+                        lastStatus.channels = p.channels;
+                        lastStatus.goroutines = p.goroutines;
+                        updateStatusBar();
+                    });
+
+                    client.onNotification(ProgressNotification, message => {
+                        vscode.window.showInformationMessage(message);
+                    });
+
+                    await client.start();
+                    console.log("Go Analyzer LSP server restarted successfully");
+
+                    // Restart cursor tracking
+                    startCursorTracking();
+                } catch (error) {
+                    console.error("Error restarting LSP server:", error);
+                    vscode.window.showErrorMessage(`Failed to restart Go Analyzer: ${error}`);
+                    return;
+                }
+            } else {
+                // Server already running, just restart cursor tracking
+                startCursorTracking();
+            }
+
+            vscode.window.showInformationMessage("Go Analyzer: Extension activated - Ready for analysis (Расширение активировано - Готов к анализу)");
+        }
+    );
+    context.subscriptions.push(activateCmd);
+
+    const deactivateCmd = vscode.commands.registerCommand(
+        "goanalyzer.deactivate",
+        async () => {
+            extensionActive = false;
+            updateStatusBar();
+
+            // Clear any existing decorations
+            const editor = vscode.window.activeTextEditor;
+            if (editor && editor.document.languageId === "go") {
+                for (const key in decorationTypes) {
+                    editor.setDecorations(decorationTypes[key as keyof typeof decorationTypes], []);
+                }
+            }
+
+            // Stop cursor tracking
+            cursorDisp?.dispose();
+            clearTimeout(timeoutHandle as NodeJS.Timeout);
+
+            // Properly shutdown LSP client and server
+            if (client && client.state === 2) { // State.Running
+                try {
+                    console.log("Stopping Go Analyzer LSP server...");
+                    await client.stop();
+                    console.log("Go Analyzer LSP server stopped successfully");
+                } catch (error) {
+                    console.error("Error stopping LSP server:", error);
+                }
+            }
+
+            vscode.window.showInformationMessage("Go Analyzer: Extension deactivated - LSP server stopped (Расширение деактивировано - LSP сервер остановлен)");
+        }
+    );
+    context.subscriptions.push(deactivateCmd);
+
     /* -------- авто-анализ курсора -------- */
     let cursorDisp: vscode.Disposable | undefined;
     let lastPos: vscode.Position | undefined;
@@ -233,6 +421,9 @@ export function activate(context: vscode.ExtensionContext) {
         cursorDisp = vscode.window.onDidChangeTextEditorSelection(evt => {
             const editor = evt.textEditor;
             if (editor.document.languageId !== "go") return;
+
+            // Check if extension is active
+            if (!extensionActive) return;
 
             const enable = vscode.workspace.getConfiguration("goAnalyzer")
                 .get<boolean>("enableAutoAnalysis", true);
@@ -269,13 +460,15 @@ export function activate(context: vscode.ExtensionContext) {
                             Pointer: [],
                             Race: [],
                             RaceLow: [],
+                            AliasReassigned: [],
+                            AliasCaptured: [],
                         };
                         for (const d of resp) {
                             const range = new vscode.Range(
                                 new vscode.Position(d.range.start.line, d.range.start.character),
                                 new vscode.Position(d.range.end.line, d.range.end.character),
                             );
-                            byType[d.kind].push({ range, hoverMessage: d.hoverMessage });
+                            byType[d.kind].push({ range, hoverMessage: d.hover_text });
                         }
                         for (const [k, decos] of Object.entries(byType)) {
                             editor.setDecorations(decorationTypes[k as keyof typeof decorationTypes], decos);
@@ -289,16 +482,17 @@ export function activate(context: vscode.ExtensionContext) {
     };
 
     startCursorTracking();
-    if (cursorDisp) context.subscriptions.push(cursorDisp);
 
-    context.subscriptions.push(
-        vscode.window.onDidChangeActiveTextEditor(ed => {
-            if (ed && ed.document.languageId === "go") startCursorTracking();
-        }),
-    );
+    // Добавляем обработчик смены активного редактора
+    const editorChangeDisposable = vscode.window.onDidChangeActiveTextEditor(ed => {
+        if (ed && ed.document.languageId === "go") {
+            startCursorTracking();
+        }
+    });
+    addDisposable(editorChangeDisposable);
 
     /* -------- hover provider -------- */
-    vscode.languages.registerHoverProvider("go", {
+    const hoverProvider = vscode.languages.registerHoverProvider("go", {
         async provideHover(doc, pos, token) {
             try {
                 const resp: any = await client!.sendRequest(
@@ -311,17 +505,22 @@ export function activate(context: vscode.ExtensionContext) {
                 }
                 return null;
             } catch (err) {
-                vscode.window.showErrorMessage(`Hover error: ${err}`);
-                console.error(err);
+                console.error("Hover provider error:", err);
                 return null;
             }
         },
     });
+    addDisposable(hoverProvider);
 
     /* -------- команда showGraph -------- */
     const showGraphCmd = vscode.commands.registerCommand(
         "goanalyzer.showGraph",
         async () => {
+            if (!extensionActive) {
+                vscode.window.showWarningMessage("Go Analyzer is deactivated. Use Shift+Alt+S to activate.");
+                return;
+            }
+
             const editor = vscode.window.activeTextEditor;
             if (!editor || editor.document.languageId !== "go") {
                 vscode.window.showErrorMessage("No Go editor is active.");
@@ -547,20 +746,36 @@ export function activate(context: vscode.ExtensionContext) {
             panel.webview.html = html;
         }
     );
-    context.subscriptions.push(showGraphCmd);
+    addDisposable(showGraphCmd);
 
     /* -------- запуск клиента -------- */
     client.start()
-        .then(() => vscode.window.showInformationMessage("Go Analyzer started"))
+        .then(() => {
+            vscode.window.showInformationMessage("Go Analyzer started");
+            // Добавляем все disposables в context.subscriptions
+            disposables.forEach(d => context.subscriptions.push(d));
+        })
         .catch(err => {
             vscode.window.showErrorMessage(`Failed to start Go Analyzer: ${err}`);
             console.error(err);
         });
 }
 
-/* ────────────────────────────────────────────────────────────────────────── */
-/*  Деактивация                                                              */
-/* ────────────────────────────────────────────────────────────────────────── */
 export function deactivate(): Thenable<void> | undefined {
-    return client?.stop();
+    console.log("Extension deactivation started");
+
+    // Очищаем все обработчики событий
+    cleanupEventHandlers();
+
+    // Останавливаем LSP клиент
+    if (client) {
+        console.log("Stopping LSP client during deactivation");
+        return client.stop().then(() => {
+            console.log("LSP client stopped successfully");
+        }).catch(error => {
+            console.error("Error stopping LSP client:", error);
+        });
+    }
+
+    return undefined;
 }

@@ -12,7 +12,6 @@ type Task struct {
 	ID    int
 	Value int
 }
-
 type WorkerPool struct {
 	Tasks       []Task
 	Result      map[int]int

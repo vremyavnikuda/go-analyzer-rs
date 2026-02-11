@@ -35,7 +35,7 @@ use std::time::{Duration, SystemTime};
 use tokio::sync::Mutex;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer};
-use tree_sitter::{Parser, Tree};
+use tree_sitter::{Parser, Point, Tree};
 use tree_sitter_go::language;
 
 pub struct IndexingStatusNotification;
@@ -585,6 +585,34 @@ impl LanguageServer for Backend {
             let mut decorations = vec![];
             let mut lifecycle_points: Vec<LifecyclePoint> = Vec::new();
             let sync_funcs = crate::analysis::collect_sync_functions(&tree, &code);
+            let is_decl_global = {
+                let mut is_global = true;
+                let decl_point = Point {
+                    row: var_info.declaration.start.line as usize,
+                    column: var_info.declaration.start.character as usize,
+                };
+                if let Some(mut node) = tree
+                    .root_node()
+                    .descendant_for_point_range(decl_point, decl_point)
+                {
+                    loop {
+                        let kind = node.kind();
+                        if kind == "function_declaration"
+                            || kind == "method_declaration"
+                            || kind == "func_literal"
+                        {
+                            is_global = false;
+                            break;
+                        }
+                        if let Some(parent) = node.parent() {
+                            node = parent;
+                        } else {
+                            break;
+                        }
+                    }
+                }
+                is_global
+            };
 
             decorations.push(Decoration {
                 range: var_info.declaration,
@@ -641,7 +669,7 @@ impl LanguageServer for Backend {
                                     false
                                 }
                             };
-                        if is_in_goroutine_result {
+                        if is_in_goroutine_result && is_decl_global {
                             let race_severity = match std::panic::catch_unwind(|| {
                                 determine_race_severity(&tree, use_range, &code, &sync_funcs)
                             }) {
@@ -767,7 +795,7 @@ impl LanguageServer for Backend {
                                 }
                             };
 
-                        if is_in_goroutine_result {
+                        if is_in_goroutine_result && is_decl_global {
                             let race_severity = match std::panic::catch_unwind(|| {
                                 determine_race_severity(&tree, *use_range, &code, &sync_funcs)
                             }) {

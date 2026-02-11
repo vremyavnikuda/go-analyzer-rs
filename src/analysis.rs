@@ -121,7 +121,7 @@ pub fn determine_race_severity(
     };
 
     if let Some(goroutine_node) = find_goroutine_context(tree.root_node(), target_point) {
-        if has_synchronization_in_goroutine(goroutine_node, code, sync_funcs) {
+        if has_synchronization_in_goroutine(goroutine_node, target_point, code, sync_funcs) {
             RaceSeverity::Low
         } else {
             RaceSeverity::High
@@ -137,13 +137,14 @@ pub fn determine_race_severity(
 
 fn has_synchronization_in_goroutine(
     goroutine_node: tree_sitter::Node,
+    target_point: Point,
     code: &str,
     sync_funcs: &HashSet<String>,
 ) -> bool {
     if find_sync_in_node(goroutine_node, code) {
         return true;
     }
-    has_sync_call_in_node(goroutine_node, code, sync_funcs)
+    has_sync_call_in_node(goroutine_node, target_point, code, sync_funcs)
 }
 
 pub fn collect_sync_functions(tree: &Tree, code: &str) -> HashSet<String> {
@@ -174,18 +175,28 @@ pub fn collect_sync_functions(tree: &Tree, code: &str) -> HashSet<String> {
     names
 }
 
-fn has_sync_call_in_node(node: Node, code: &str, sync_funcs: &HashSet<String>) -> bool {
+fn has_sync_call_in_node(
+    node: Node,
+    target_point: Point,
+    code: &str,
+    sync_funcs: &HashSet<String>,
+) -> bool {
+    if node.start_position() > target_point || target_point > node.end_position() {
+        return false;
+    }
     if node.kind() == "call_expression" {
-        if let Some(name) = call_expression_name(node, code) {
-            if sync_funcs.contains(&name) {
-                return true;
+        if node.start_position() <= target_point && target_point <= node.end_position() {
+            if let Some(name) = call_expression_name(node, code) {
+                if sync_funcs.contains(&name) {
+                    return true;
+                }
             }
         }
     }
     let mut cursor = node.walk();
     if cursor.goto_first_child() {
         loop {
-            if has_sync_call_in_node(cursor.node(), code, sync_funcs) {
+            if has_sync_call_in_node(cursor.node(), target_point, code, sync_funcs) {
                 return true;
             }
             if !cursor.goto_next_sibling() {

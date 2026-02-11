@@ -58,4 +58,3 @@ url = "2"
 [lints.clippy]
 expect_used = "deny"
 unwrap_used = "deny"
-missing_docs = "warn"

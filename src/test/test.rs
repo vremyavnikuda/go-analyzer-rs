@@ -31,6 +31,7 @@ mod tests {
         has_synchronization_in_block, is_in_goroutine,
     };
     use crate::types::{CursorContextType, RaceSeverity};
+    use std::collections::HashSet;
     use tower_lsp::lsp_types::{Position, Range};
 
     use super::*;
@@ -261,10 +262,13 @@ func unsafe() {
         };
 
         let range_safe = Range::new(Position::new(4, 4), Position::new(4, 4));
-        let severity_safe = determine_race_severity(&tree_safe, range_safe, safe_code);
+        let sync_funcs: HashSet<String> = HashSet::new();
+        let severity_safe =
+            determine_race_severity(&tree_safe, range_safe, safe_code, &sync_funcs);
         assert_eq!(severity_safe, RaceSeverity::Low);
         let range_unsafe = Range::new(Position::new(4, 8), Position::new(4, 8));
-        let severity_unsafe = determine_race_severity(&tree_unsafe, range_unsafe, unsafe_code);
+        let severity_unsafe =
+            determine_race_severity(&tree_unsafe, range_unsafe, unsafe_code, &sync_funcs);
         assert_eq!(severity_unsafe, RaceSeverity::High);
     }
 
@@ -425,12 +429,23 @@ func unsafe() {
         let range_safe = Range::new(Position::new(2, 10), Position::new(2, 10));
         let range_unsafe = Range::new(Position::new(2, 5), Position::new(2, 5));
 
+        let sync_funcs: HashSet<String> = HashSet::new();
         assert_eq!(
-            crate::analysis::determine_race_severity(&tree_safe, range_safe, safe_code),
+            crate::analysis::determine_race_severity(
+                &tree_safe,
+                range_safe,
+                safe_code,
+                &sync_funcs
+            ),
             crate::types::RaceSeverity::Low
         );
         assert_eq!(
-            crate::analysis::determine_race_severity(&tree_unsafe, range_unsafe, unsafe_code),
+            crate::analysis::determine_race_severity(
+                &tree_unsafe,
+                range_unsafe,
+                unsafe_code,
+                &sync_funcs
+            ),
             crate::types::RaceSeverity::High
         );
     }

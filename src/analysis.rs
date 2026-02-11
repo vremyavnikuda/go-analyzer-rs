@@ -126,12 +126,10 @@ pub fn determine_race_severity(
         } else {
             RaceSeverity::High
         }
+    } else if has_synchronization_in_block(tree, range, code) {
+        RaceSeverity::Low
     } else {
-        if has_synchronization_in_block(tree, range, code) {
-            RaceSeverity::Low
-        } else {
-            RaceSeverity::High
-        }
+        RaceSeverity::High
     }
 }
 

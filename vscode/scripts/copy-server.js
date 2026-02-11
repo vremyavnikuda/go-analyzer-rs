@@ -3,12 +3,15 @@ const path = require('path');
 
 const isWindows = process.platform === 'win32';
 const serverBinaryName = isWindows ? 'go-analyzer.exe' : 'go-analyzer';
+const helperBinaryName = isWindows ? 'goanalyzer-semantic.exe' : 'goanalyzer-semantic';
 
 // Paths
 const cargoTargetDir = path.join(__dirname, '../../target/release');
 const extensionServerDir = path.join(__dirname, '../server');
 const sourcePath = path.join(cargoTargetDir, serverBinaryName);
 const destPath = path.join(extensionServerDir, serverBinaryName);
+const helperSourcePath = path.join(__dirname, '../../tools/goanalyzer-semantic', helperBinaryName);
+const helperDestPath = path.join(extensionServerDir, helperBinaryName);
 
 console.log('Copying server binary...');
 console.log(`Platform: ${process.platform}`);
@@ -39,6 +42,17 @@ try {
 
     console.log('✅ Server binary copied successfully!');
     console.log(`Binary size: ${(fs.statSync(destPath).size / 1024 / 1024).toFixed(2)} MB`);
+
+    if (fs.existsSync(helperSourcePath)) {
+        fs.copyFileSync(helperSourcePath, helperDestPath);
+        if (!isWindows) {
+            fs.chmodSync(helperDestPath, 0o755);
+        }
+        console.log('✅ Semantic helper copied successfully!');
+        console.log(`Helper size: ${(fs.statSync(helperDestPath).size / 1024 / 1024).toFixed(2)} MB`);
+    } else {
+        console.log('ℹ️  Semantic helper not found, skipping copy.');
+    }
 } catch (error) {
     console.error('❌ Error copying server binary:', error.message);
     process.exit(1);

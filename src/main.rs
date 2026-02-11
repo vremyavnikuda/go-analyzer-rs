@@ -1,5 +1,6 @@
 mod analysis;
 mod backend;
+mod semantic;
 mod types;
 mod util;
 
@@ -9,8 +10,6 @@ use tower_lsp::{LspService, Server};
 #[tokio::main]
 async fn main() {
     eprintln!("Starting Go Analyzer LSP server...");
-
-    // На Windows добавляем обработку сигналов для корректного завершения
     #[cfg(target_os = "windows")]
     {
         tokio::spawn(async {
@@ -19,8 +18,6 @@ async fn main() {
             std::process::exit(0);
         });
     }
-
-    // На Unix системах обрабатываем SIGTERM и SIGINT
     #[cfg(not(target_os = "windows"))]
     {
         tokio::spawn(async {
@@ -28,7 +25,6 @@ async fn main() {
                 tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate());
             let sigint_result =
                 tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt());
-
             match (sigterm_result, sigint_result) {
                 (Ok(mut sigterm), Ok(mut sigint)) => {
                     tokio::select! {
@@ -45,10 +41,8 @@ async fn main() {
             }
         });
     }
-
     let (stdin, stdout) = (tokio::io::stdin(), tokio::io::stdout());
     let (service, socket) = LspService::new(Backend::new);
-
     eprintln!("Go Analyzer LSP server ready for connections");
     Server::new(stdin, stdout, socket).serve(service).await;
     eprintln!("Go Analyzer LSP server shutdown complete");

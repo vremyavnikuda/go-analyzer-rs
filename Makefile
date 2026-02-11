@@ -71,7 +71,7 @@ extension-only:
 	@cd vscode && npm install
 	@cd vscode && tsc -p ./
 	@cd vscode && vsce package --allow-missing-repository --no-dependencies
-	@echo "✅ Extension built successfully without server binary"
+	@echo "Extension built successfully without server binary"
 
 # VS Code Extension Build with Server Binary
 build-vscode-full: npm compile
@@ -97,15 +97,15 @@ endif
 
 # CRATES.IO PUBLICATION
 publish-check: ## Verify package is ready for crates.io publication
-	@echo "📋 Verifying package for crates.io..."
+	@echo "Verifying package for crates.io..."
 	@cargo fmt --check
 	@cargo clippy --all-targets --all-features -- -D warnings
 	@cargo test --quiet
 	@cargo check
-	@echo "✅ Package verification complete"
+	@echo "Package verification complete"
 
 publish-prep: ## Prepare package for crates.io publication
-	@echo "📦 Preparing package for publication..."
+	@echo "Preparing package for publication..."
 ifeq ($(OS),Windows_NT)
 	@powershell -ExecutionPolicy Bypass -File publish-to-crates.ps1
 else
@@ -114,19 +114,19 @@ else
 endif
 
 publish: publish-check ## Publish to crates.io (requires login)
-	@echo "🚀 Publishing to crates.io..."
-	@echo "⚠️ Make sure you have run 'cargo login <token>' first"
+	@echo "Publishing to crates.io..."
+	@echo "Make sure you have run 'cargo login <token>' first"
 	@cargo publish
-	@echo "✅ Published successfully!"
-	@echo "📦 Users can now install with: cargo install go-analyzer"
+	@echo "Published successfully!"
+	@echo "Users can now install with: cargo install go-analyzer"
 
 # TESTING AND FORMATTING
 test: ## Run all tests
-	@echo "🧪 Running tests..."
+	@echo "Running tests..."
 	@cargo test --quiet
-	@echo "✅ Tests passed"
+	@echo "Tests passed"
 
 fmt: ## Format code
-	@echo "🎨 Formatting Rust code..."
+	@echo "Formatting Rust code..."
 	@cargo fmt
-	@echo "✅ Code formatted"
+	@echo "Code formatted"

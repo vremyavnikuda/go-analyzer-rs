@@ -26,9 +26,9 @@ mod tests {
     #![allow(clippy::len_zero)]
 
     use crate::analysis::{
-        analyze_goroutine_usage, count_entities, determine_race_severity,
-        find_node_at_cursor_with_context, find_variable_at_position,
-        find_variable_at_position_enhanced, has_synchronization_in_block, is_in_goroutine,
+        count_entities, determine_race_severity, find_node_at_cursor_with_context,
+        find_variable_at_position, find_variable_at_position_enhanced,
+        has_synchronization_in_block, is_in_goroutine,
     };
     use crate::types::{CursorContextType, RaceSeverity};
     use tower_lsp::lsp_types::{Position, Range};
@@ -48,8 +48,6 @@ func main() {
             Err(_) => return,
         };
 
-        // Test cursor on variable declaration
-        // Position on "x" in "x := 42"
         let pos_decl = Position::new(2, 4);
         let var_info = match find_variable_at_position(&tree, code, pos_decl) {
             Some(info) => info,
@@ -57,9 +55,7 @@ func main() {
         };
 
         assert_eq!(var_info.name, "x");
-        // Line numbers may vary based on parser implementation - just check it's found
         assert!(var_info.declaration.start.line <= 2);
-        // At least one usage in println(x)
         assert!(var_info.uses.len() >= 1);
         assert!(!var_info.is_pointer);
     }
@@ -81,9 +77,6 @@ func main() {
             Ok(tree) => tree,
             Err(_) => return,
         };
-
-        // Test cursor on object part (user.name)
-        // Position on "user" in "user.name"
         let pos_object = Position::new(7, 4);
         let var_info_obj = match find_variable_at_position(&tree, code, pos_object) {
             Some(info) => info,
@@ -91,9 +84,7 @@ func main() {
         };
 
         assert_eq!(var_info_obj.name, "user");
-        // Line numbers may vary - just check it's reasonable
         assert!(var_info_obj.declaration.start.line <= 7);
-        // At least two uses in field accesses
         assert!(var_info_obj.uses.len() >= 2);
     }
 
@@ -111,15 +102,11 @@ func process(data string) {
             Ok(tree) => tree,
             Err(_) => return,
         };
-
-        // Test cursor on parameter usage
-        // Position on "data" in loop
         let pos_use = Position::new(4, 19);
         let var_info_use = match find_variable_at_position(&tree, code, pos_use) {
             Some(info) => info,
             None => return,
         };
-
         assert_eq!(var_info_use.name, "data");
         assert!(var_info_use.declaration.start.line <= 1);
     }
@@ -139,8 +126,6 @@ func main() {
             Err(_) => return,
         };
 
-        // Test cursor on range index variable
-        // Position on "i" in range clause
         let pos_index = Position::new(3, 8);
         let var_info_i = match find_variable_at_position(&tree, code, pos_index) {
             Some(info) => info,
@@ -149,7 +134,6 @@ func main() {
 
         assert_eq!(var_info_i.name, "i");
         assert!(var_info_i.declaration.start.line <= 3);
-        // At least one use in println
         assert!(!var_info_i.uses.is_empty());
     }
 
@@ -169,8 +153,6 @@ func main() {
             Err(_) => return,
         };
 
-        // Test cursor on type switch variable
-        // Position on "v" in switch statement
         let pos_switch = Position::new(3, 11);
         let var_info = match find_variable_at_position(&tree, code, pos_switch) {
             Some(info) => info,
@@ -179,7 +161,6 @@ func main() {
 
         assert_eq!(var_info.name, "v");
         assert!(var_info.declaration.start.line <= 3);
-        // Used in case branches
         assert!(var_info.uses.len() >= 1);
     }
 
@@ -197,18 +178,13 @@ func demo() {
             Ok(tree) => tree,
             Err(_) => return,
         };
-
-        // Analyze variable 'x'
-        // Position on "x" in declaration
         let pos_x = Position::new(2, 8);
         let var_info = match find_variable_at_position(&tree, code, pos_x) {
             Some(info) => info,
             None => return,
         };
-
         assert_eq!(var_info.name, "x");
         assert!(var_info.declaration.start.line <= 2);
-        // Used in &x, z := x + 5, println
         assert!(var_info.uses.len() >= 2);
     }
 
@@ -225,20 +201,14 @@ func main() {
             Ok(tree) => tree,
             Err(_) => return,
         };
-
-        // Test address-of operation
-        // Position on "x" in "&x"
         let pos_addr = Position::new(3, 12);
         let var_info = match find_variable_at_position(&tree, code, pos_addr) {
             Some(info) => info,
             None => return,
         };
-
         assert_eq!(var_info.name, "x");
         assert!(var_info.uses.len() >= 1);
     }
-
-    // Tests for Goroutine and Data Race Detection
 
     #[test]
     fn test_goroutine_detection_basic() {
@@ -255,12 +225,8 @@ func main() {
             Ok(tree) => tree,
             Err(_) => return,
         };
-
-        // Test if position inside goroutine is detected
         let range_inside = Range::new(Position::new(4, 16), Position::new(4, 16));
         assert!(is_in_goroutine(&tree, range_inside));
-
-        // Test if position outside goroutine is detected
         let range_outside = Range::new(Position::new(6, 4), Position::new(6, 4));
         assert!(!is_in_goroutine(&tree, range_outside));
     }
@@ -294,18 +260,13 @@ func unsafe() {
             Err(_) => return,
         };
 
-        // Test safe code (with synchronization)
         let range_safe = Range::new(Position::new(4, 4), Position::new(4, 4));
         let severity_safe = determine_race_severity(&tree_safe, range_safe, safe_code);
         assert_eq!(severity_safe, RaceSeverity::Low);
-
-        // Test unsafe code (no synchronization)
         let range_unsafe = Range::new(Position::new(4, 8), Position::new(4, 8));
         let severity_unsafe = determine_race_severity(&tree_unsafe, range_unsafe, unsafe_code);
         assert_eq!(severity_unsafe, RaceSeverity::High);
     }
-
-    // Tests for Cursor Context Detection
 
     #[test]
     fn test_cursor_context_detection() {
@@ -319,19 +280,13 @@ func main() {
             Ok(tree) => tree,
             Err(_) => return,
         };
-
-        // Test variable declaration context
-        // Position on "user" in declaration
         let pos_var_decl = Position::new(2, 4);
         let context = match find_node_at_cursor_with_context(&tree, pos_var_decl) {
             Some(ctx) => ctx,
             None => return,
         };
-        // Context type implementation may vary - just verify we get some meaningful context
         assert!(!context.target_node_kind.is_empty());
     }
-
-    // Tests for Error Handling and Edge Cases
 
     #[test]
     fn test_empty_file() {
@@ -340,13 +295,10 @@ func main() {
             Ok(tree) => tree,
             Err(_) => return,
         };
-
         let pos = Position::new(0, 0);
         let var_info = find_variable_at_position(&tree, code, pos);
         assert!(var_info.is_none());
-
         let context = find_node_at_cursor_with_context(&tree, pos);
-        // Empty files may still have minimal AST structure, so just check for None or Unknown
         if let Some(ctx) = context {
             assert!(matches!(ctx.context_type, CursorContextType::Unknown));
         }
@@ -363,8 +315,6 @@ func main() {
             Ok(tree) => tree,
             Err(_) => return,
         };
-
-        // Test cursor way outside the code
         let pos_outside = Position::new(100, 100);
         let var_info = find_variable_at_position(&tree, code, pos_outside);
         assert!(var_info.is_none());
@@ -372,7 +322,6 @@ func main() {
 
     #[test]
     fn test_panic_recovery() {
-        // Test that analysis functions handle panics gracefully
         let code = r#"
 func main() {
     x := 42
@@ -388,16 +337,11 @@ func main() {
                 Err(_) => return true,
             };
             let pos = Position::new(4, 16);
-
-            // These should not panic even with complex analysis
             let _ = find_variable_at_position(&tree, code, pos);
             let _ = find_variable_at_position_enhanced(&tree, code, pos);
             let _ = find_node_at_cursor_with_context(&tree, pos);
-            let _ = analyze_goroutine_usage(&tree, "x", code);
-
             true
         });
-
         assert!(result.is_ok());
         if let Ok(result_value) = result {
             assert!(result_value);
@@ -420,7 +364,6 @@ func example() {
             Ok(tree) => tree,
             Err(_) => return,
         };
-        // Position inside the inner block
         let range = Range::new(Position::new(2, 12), Position::new(2, 12));
         assert!(has_synchronization_in_block(&tree, range, code));
     }
@@ -575,8 +518,6 @@ func example() {
             Ok(tree) => tree,
             Err(_) => return,
         };
-
-        // Test cursor on struct field access (user.name)
         let pos_field_access = Position::new(6, 9);
         let context =
             match crate::analysis::find_node_at_cursor_with_context(&tree, pos_field_access) {
@@ -587,8 +528,6 @@ func example() {
             context.context_type,
             crate::types::CursorContextType::FieldAccess
         );
-
-        // Test cursor on variable in goroutine
         let pos_goroutine = Position::new(8, 23);
         let var_info =
             match crate::analysis::find_variable_at_position_enhanced(&tree, code, pos_goroutine) {
@@ -596,8 +535,6 @@ func example() {
                 None => return,
             };
         assert_eq!(var_info.name, "user");
-
-        // Test enhanced detection on struct declaration
         let pos_declaration = Position::new(2, 8);
         let var_info_decl =
             match crate::analysis::find_variable_at_position_enhanced(&tree, code, pos_declaration)
@@ -608,8 +545,6 @@ func example() {
         assert_eq!(var_info_decl.name, "user");
         assert!(var_info_decl.uses.len() >= 2);
     }
-
-    // Additional Tests for Complex Go Patterns
 
     #[test]
     fn test_anonymous_structs() {
@@ -713,9 +648,6 @@ func main() {
 
         let range_nested = Range::new(Position::new(5, 20), Position::new(5, 20));
         assert!(is_in_goroutine(&tree, range_nested));
-
-        let usage_analysis = analyze_goroutine_usage(&tree, "x", code);
-        assert!(!usage_analysis.is_empty());
     }
 
     #[test]
@@ -801,9 +733,7 @@ func main() {
         let counts = count_entities(&tree, code);
         assert!(counts.channels >= 1);
         assert!(counts.goroutines >= 1);
-        // ch and value
         assert!(counts.variables >= 2);
-
         let pos_ch = Position::new(2, 4);
         let var_info = match find_variable_at_position(&tree, code, pos_ch) {
             Some(info) => info,
@@ -811,7 +741,6 @@ func main() {
         };
 
         assert_eq!(var_info.name, "ch");
-        // Used in send and receive operations
         assert!(var_info.uses.len() >= 2);
     }
 
@@ -827,19 +756,14 @@ func broken( {
         let result = std::panic::catch_unwind(|| {
             let tree = match parse_go(code) {
                 Ok(tree) => tree,
-                // Parsing errors are expected for invalid syntax
                 Err(_) => return true,
             };
             let pos = Position::new(2, 4);
             find_variable_at_position(&tree, code, pos);
             true
         });
-
-        // Should not panic
         assert!(result.is_ok());
     }
-
-    // Test for comprehensive entity counting
 
     #[test]
     fn test_comprehensive_entity_counting() {
@@ -871,17 +795,9 @@ func main() {
             Err(_) => return,
         };
         let counts = count_entities(&tree, code);
-
-        // Should count: globalVar, localVar, ch, anotherVar, mainVar
         assert!(counts.variables >= 5);
-
-        // Should count: function1, function2, main, anonymous function
         assert!(counts.functions >= 3);
-
-        // Should count: make(chan int)
         assert!(counts.channels >= 1);
-
-        // Should count: two go statements
         assert!(counts.goroutines >= 2);
     }
 
@@ -900,14 +816,10 @@ func main() {
             Err(_) => return,
         };
 
-        // Test reassignment detection
         let reassign_range = Range::new(Position::new(3, 4), Position::new(3, 5));
         let is_reassign =
             crate::analysis::is_variable_reassignment(&tree, "x", reassign_range, code);
         assert!(is_reassign, "Should detect x = 100 as reassignment");
-
-        // Test normal declaration (not reassignment)
-        // The declaration itself should not be flagged as reassignment
         let decl_range = Range::new(Position::new(2, 4), Position::new(2, 5));
         let is_not_reassign =
             crate::analysis::is_variable_reassignment(&tree, "x", decl_range, code);
@@ -934,14 +846,12 @@ func main() {
             Err(_) => return,
         };
 
-        // Test capture detection
         let capture_range = Range::new(Position::new(4, 16), Position::new(4, 17));
         let declaration_range = Range::new(Position::new(2, 4), Position::new(2, 5));
         let is_captured =
             crate::analysis::is_variable_captured(&tree, "x", capture_range, declaration_range);
         assert!(is_captured, "Should detect x as captured in goroutine");
 
-        // Test non-capture usage
         let non_capture_range = Range::new(Position::new(7, 12), Position::new(7, 13));
         let y_declaration_range = Range::new(Position::new(6, 4), Position::new(6, 5));
         let is_not_captured = crate::analysis::is_variable_captured(

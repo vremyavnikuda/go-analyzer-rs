@@ -2,119 +2,124 @@ package main
 
 import (
 	"fmt"
-	"math/rand"
-	"sort"
 	"sync"
 	"time"
 )
 
-type Task struct {
-	ID    int
-	Value int
+var globalMu sync.Mutex
+var globalCounter = 1
+
+func init() {
+	globalCounter = 42
 }
+
+type Node struct {
+	Value int
+	Next  *Node
+}
+
 type WorkerPool struct {
-	Tasks       []Task
-	Result      map[int]int
-	Mutex       sync.Mutex
-	SharedTotal int // <- нарочно без мьютекса (data race)
-	WG          sync.WaitGroup
+	mu      sync.Mutex
+	tasks   []int
+	results map[int]int
+	total   int
+}
+
+func (p *WorkerPool) addTask(v int) {
+	p.mu.Lock()
+	p.tasks = append(p.tasks, v)
+	p.mu.Unlock()
+}
+
+func (p *WorkerPool) sumResults() int {
+	sum := 0
+	for _, v := range p.results {
+		sum += v
+	}
+	return sum
+}
+
+func makeNode(v int) *Node {
+	n := Node{Value: v}
+	return &n
+}
+
+func compute(a int) (result int, err error) {
+	if a < 0 {
+		err = fmt.Errorf("neg")
+		return
+	}
+	result = a * 2
+	return
 }
 
 func main() {
-	rand.Seed(time.Now().UnixNano())
-
 	pool := &WorkerPool{
-		Tasks:  generateTasks(100),
-		Result: make(map[int]int),
+		tasks:   []int{1, 2, 3},
+		results: map[int]int{},
 	}
+	pool.addTask(4)
 
-	// Стартуем 5 воркеров
-	for i := 0; i < 5; i++ {
-		pool.WG.Add(1)
-		go pool.worker(i)
+	x := 1
+	if x := x + 1; x > 1 {
+		fmt.Println("shadow", x)
 	}
+	fmt.Println("outer", x)
 
-	// Сортировка в отдельной горутине с блокировкой
-	go func() {
-		for {
-			time.Sleep(2 * time.Second)
-			pool.Mutex.Lock()
-			taskSnapshot := append([]Task(nil), pool.Tasks...)
-			pool.Mutex.Unlock()
+	sum := 0
+	for i, v := range pool.tasks {
+		sum += v + i
+	}
+	fmt.Println("sum", sum)
 
-			sort.Slice(taskSnapshot, func(i, j int) bool {
-				return taskSnapshot[i].Value < taskSnapshot[j].Value
-			})
-
-			fmt.Println("[INFO] Top 3 tasks:", taskSnapshot[:3])
+	for i, v := range pool.tasks {
+		_ = i
+		if v%2 == 0 {
+			continue
 		}
+		pool.results[v] = v * 10
+	}
+
+	total := 0
+	func() {
+		total++
 	}()
 
-	pool.WG.Wait()
-
-	fmt.Println("\n🔧 Финальные результаты:")
-	for k, v := range pool.Result {
-		fmt.Printf("Task %d -> %d\n", k, v)
+	for i := 0; i < 2; i++ {
+		go func() {
+			globalMu.Lock()
+			globalCounter += i
+			globalMu.Unlock()
+		}()
 	}
-	fmt.Println("Shared Total (возможна ошибка из-за гонки):", pool.SharedTotal)
-}
 
-func (p *WorkerPool) worker(id int) {
-	defer p.WG.Done()
-
-	for {
-		p.Mutex.Lock()
-		if len(p.Tasks) == 0 {
-			p.Mutex.Unlock()
-			fmt.Printf("Worker #%d завершил работу\n", id)
-			return
-		}
-		task := p.Tasks[0]
-		p.Tasks = p.Tasks[1:]
-		p.Mutex.Unlock()
-
-		// сложное выражение с блоками и задержкой
-		result := complexComputation(task.Value)
-
-		// намеренный data race (SharedTotal без мьютекса)
-		p.SharedTotal += result
-
-		// безопасная запись
-		p.Mutex.Lock()
-		p.Result[task.ID] = result
-		p.Mutex.Unlock()
-
-		fmt.Printf("Worker #%d обработал Task %d = %d\n", id, task.ID, result)
+	for i := 0; i < 2; i++ {
+		i := i
+		go func() {
+			fmt.Println("fixed", i)
+		}()
 	}
-}
 
-func complexComputation(x int) int {
-	// имитируем тяжёлую работу
-	time.Sleep(time.Duration(rand.Intn(200)) * time.Millisecond)
+	n := Node{Value: 7}
+	p := &n
+	p.Value += 1
 
-	// сложное выражение: рекурсия, ветвления, случайности
-	if x%7 == 0 {
-		return x * x
-	} else if x%5 == 0 {
-		return fibonacci(x % 10)
+	any := interface{}(pool)
+	switch v := any.(type) {
+	case *WorkerPool:
+		fmt.Println("ts", v.total)
+	default:
+		fmt.Println("ts", v)
 	}
-	return x + rand.Intn(50)
-}
 
-func fibonacci(n int) int {
-	if n < 2 {
-		return 1
-	}
-	return fibonacci(n-1) + fibonacci(n-2)
-}
+	node := makeNode(9)
+	fmt.Println(node.Value)
 
-func generateTasks(n int) []Task {
-	tasks := make([]Task, n)
-	for i := range tasks {
-		tasks[i] = Task{
-			ID:    i + 1,
-			Value: rand.Intn(100),
-		}
+	r, err := compute(5)
+	if err == nil {
+		fmt.Println("compute", r, total)
 	}
-	return tasks
+
+	time.Sleep(10 * time.Millisecond)
+	fmt.Println(pool.sumResults())
 }

@@ -1,7 +1,7 @@
 {
   "name": "go-analyzer",
   "displayName": "Go Analyzer",
-  "description": "Go Analyzer - Advanced static analysis tool for Go development that provides real-time variable lifecycle tracking, data race detection, and visual code flow analysis.",
+  "description": "Go Analyzer - Advanced static analysis tool for Go development that provides real-time variable lifecycle tracking, data race detection, and visual feedback in the editor.",
   "version": "0.1.0",
   "icon": "icon.png",
   "engines": {
@@ -44,8 +44,8 @@
         "title": "Go Analyzer: Show Lifecycle"
       },
       {
-        "command": "goanalyzer.showGraph",
-        "title": "Go Analyzer: Show Graph"
+        "command": "goanalyzer.dumpAst",
+        "title": "Go Analyzer: Dump AST to Output"
       },
       {
         "command": "goanalyzer.activate",
@@ -115,6 +115,41 @@
           "type": "string",
           "default": "magenta",
           "description": "Color for captured alias variables in closures"
+        },
+        "goAnalyzer.debugDumpAst": {
+          "type": "boolean",
+          "default": false,
+          "description": "Dump tree-sitter AST to Go Analyzer output on each analysis"
+        },
+        "goAnalyzer.astMaxChars": {
+          "type": "number",
+          "default": 20000,
+          "description": "Maximum AST characters to print to the Output channel"
+        },
+        "goAnalyzer.debugLifecycleJson": {
+          "type": "boolean",
+          "default": false,
+          "description": "Output lifecycle analysis as JSON to the Go Analyzer output channel"
+        },
+        "goAnalyzer.lifecycleJsonMaxChars": {
+          "type": "number",
+          "default": 20000,
+          "description": "Maximum lifecycle JSON characters to print to the Output channel"
+        },
+        "goAnalyzer.semanticEnable": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable Go semantic resolver (auto-enabled when helper is bundled)"
+        },
+        "goAnalyzer.semanticHelperPath": {
+          "type": "string",
+          "default": "",
+          "description": "Optional path to go/types helper binary (auto-detected if empty)"
+        },
+        "goAnalyzer.semanticTimeoutMs": {
+          "type": "number",
+          "default": 2000,
+          "description": "Timeout in milliseconds for semantic helper execution"
         }
       }
     }

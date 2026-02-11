@@ -1,0 +1,54 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "cargo: build (server release)",
+      "type": "shell",
+      "command": "cargo build --release --bin go-analyzer",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": "$rustc"
+    },
+    {
+      "label": "go: build (semantic helper)",
+      "type": "shell",
+      "command": "go build -o ${workspaceFolder}/target/release/goanalyzer-semantic",
+      "options": {
+        "cwd": "${workspaceFolder}/tools/goanalyzer-semantic",
+        "env": {
+          "GOCACHE": "/tmp/go-build-cache"
+        }
+      },
+      "windows": {
+        "command": "go build -o ${workspaceFolder}/target/release/goanalyzer-semantic.exe"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "npm: watch (vscode)",
+      "type": "npm",
+      "script": "watch",
+      "path": "vscode",
+      "isBackground": true,
+      "problemMatcher": "$tsc-watch"
+    },
+    {
+      "label": "build: dev (server release + extension)",
+      "dependsOn": [
+        "cargo: build (server release)",
+        "go: build (semantic helper)",
+        "npm: watch (vscode)"
+      ],
+      "dependsOrder": "sequence",
+      "problemMatcher": []
+    },
+    {
+      "label": "npm: compile (vscode)",
+      "type": "npm",
+      "script": "compile",
+      "path": "vscode",
+      "problemMatcher": "$tsc"
+    }
+  ]
+}

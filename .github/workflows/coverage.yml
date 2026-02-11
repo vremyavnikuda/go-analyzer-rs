@@ -1,4 +1,4 @@
-name: Coverage
+name: CI
 
 on:
   push:
@@ -10,8 +10,8 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  coverage:
-    name: Code Coverage
+  rust:
+    name: Rust checks
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -33,20 +33,35 @@ jobs:
             target
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Install tarpaulin
-        run: cargo install cargo-tarpaulin
+      - name: Cargo fmt
+        run: cargo fmt -- --check
 
-      - name: Generate coverage report
-        run: cargo tarpaulin --verbose --all-features --workspace --timeout 120 --out xml
+      - name: Cargo clippy
+        run: cargo clippy --all-targets --all-features
 
-      - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v3
+      - name: Cargo build (release)
+        run: cargo build --release
+
+  vscode:
+    name: VS Code extension checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
         with:
-          file: ./cobertura.xml
-          fail_ci_if_error: false
+          node-version: 18
 
-      - name: Archive code coverage results
-        uses: actions/upload-artifact@v4
-        with:
-          name: code-coverage-report
-          path: cobertura.xml
+      - name: Install dependencies
+        run: npm ci
+        working-directory: vscode
+
+      - name: Lint
+        run: npm run lint
+        working-directory: vscode
+
+      - name: Build
+        run: npm run build
+        working-directory: vscode

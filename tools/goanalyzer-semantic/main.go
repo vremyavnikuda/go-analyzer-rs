@@ -533,7 +533,7 @@ func isReassign(ident *ast.Ident, info *types.Info, parents map[ast.Node]ast.Nod
 		parent := parents[n]
 		switch stmt := parent.(type) {
 		case *ast.AssignStmt:
-			if !identInExprList(ident, stmt.Lhs) {
+			if !identIsAssignTargetInList(ident, stmt.Lhs) {
 				return false
 			}
 			if stmt.Tok == token.DEFINE {
@@ -541,9 +541,9 @@ func isReassign(ident *ast.Ident, info *types.Info, parents map[ast.Node]ast.Nod
 			}
 			return true
 		case *ast.IncDecStmt:
-			return identInExpr(ident, stmt.X)
+			return identIsDirectTarget(ident, stmt.X)
 		case *ast.RangeStmt:
-			if !identInExpr(ident, stmt.Key) && !identInExpr(ident, stmt.Value) {
+			if !identIsDirectTarget(ident, stmt.Key) && !identIsDirectTarget(ident, stmt.Value) {
 				return false
 			}
 			if stmt.Tok == token.DEFINE {
@@ -553,6 +553,28 @@ func isReassign(ident *ast.Ident, info *types.Info, parents map[ast.Node]ast.Nod
 		}
 	}
 	return false
+}
+
+func identIsAssignTargetInList(ident *ast.Ident, list []ast.Expr) bool {
+	for _, expr := range list {
+		if identIsDirectTarget(ident, expr) {
+			return true
+		}
+	}
+	return false
+}
+
+// identIsDirectTarget returns true only if ident is the direct assignment target:
+// x = ..., obj.Field = ..., but NOT in index expressions or as part of larger expressions.
+func identIsDirectTarget(ident *ast.Ident, expr ast.Expr) bool {
+	switch e := expr.(type) {
+	case *ast.Ident:
+		return e == ident
+	case *ast.SelectorExpr:
+		return e.Sel == ident
+	default:
+		return false
+	}
 }
 
 func identInExprList(ident *ast.Ident, list []ast.Expr) bool {

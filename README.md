@@ -12,12 +12,6 @@
 
 ![Go Analyzer](img/img.png)
 
-## Docs
-
-- Extension details: `vscode/README.md`
-- Server details: `README_CRATES.md`
-- Russian version: `README_RU.md`
-
 ## License
 
 MIT — see `LICENSE`.

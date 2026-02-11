@@ -5,6 +5,7 @@
 use crate::types::{GraphData, GraphEdge, GraphEdgeType, GraphEntityType, GraphNode};
 use crate::{types::*, util::node_to_range};
 use serde_json::json;
+use std::collections::HashSet;
 use tower_lsp::lsp_types::{Position, Range};
 use tree_sitter::{Node, Point, Tree};
 
@@ -83,7 +84,7 @@ fn is_mutex_call(call: Node, code: &str) -> bool {
         if sel.kind() == "selector_expression" {
             if let Some(field) = sel.child_by_field_name("field") {
                 let name = text(code, field);
-                return matches!(name, "Lock" | "Unlock" | "Wait");
+                return matches!(name, "Lock" | "Unlock" | "RLock" | "RUnlock" | "Wait");
             }
         }
     }
@@ -108,14 +109,19 @@ fn is_atomic_call(call: Node, code: &str) -> bool {
     false
 }
 
-pub fn determine_race_severity(tree: &Tree, range: Range, code: &str) -> RaceSeverity {
+pub fn determine_race_severity(
+    tree: &Tree,
+    range: Range,
+    code: &str,
+    sync_funcs: &HashSet<String>,
+) -> RaceSeverity {
     let target_point = Point {
         row: range.start.line as usize,
         column: range.start.character as usize,
     };
 
     if let Some(goroutine_node) = find_goroutine_context(tree.root_node(), target_point) {
-        if has_synchronization_in_goroutine(goroutine_node, code) {
+        if has_synchronization_in_goroutine(goroutine_node, code, sync_funcs) {
             RaceSeverity::Low
         } else {
             RaceSeverity::High
@@ -129,8 +135,76 @@ pub fn determine_race_severity(tree: &Tree, range: Range, code: &str) -> RaceSev
     }
 }
 
-fn has_synchronization_in_goroutine(goroutine_node: tree_sitter::Node, code: &str) -> bool {
-    find_sync_in_node(goroutine_node, code)
+fn has_synchronization_in_goroutine(
+    goroutine_node: tree_sitter::Node,
+    code: &str,
+    sync_funcs: &HashSet<String>,
+) -> bool {
+    if find_sync_in_node(goroutine_node, code) {
+        return true;
+    }
+    has_sync_call_in_node(goroutine_node, code, sync_funcs)
+}
+
+pub fn collect_sync_functions(tree: &Tree, code: &str) -> HashSet<String> {
+    let mut names = HashSet::new();
+    let mut stack = vec![tree.root_node()];
+    while let Some(node) = stack.pop() {
+        match node.kind() {
+            "function_declaration" | "method_declaration" => {
+                if let Some(body) = node.child_by_field_name("body") {
+                    if find_sync_in_node(body, code) {
+                        if let Some(name_node) = node.child_by_field_name("name") {
+                            let name = text(code, name_node).to_string();
+                            if !name.is_empty() {
+                                names.insert(name);
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+        for i in (0..node.child_count()).rev() {
+            if let Some(c) = node.child(i) {
+                stack.push(c);
+            }
+        }
+    }
+    names
+}
+
+fn has_sync_call_in_node(node: Node, code: &str, sync_funcs: &HashSet<String>) -> bool {
+    if node.kind() == "call_expression" {
+        if let Some(name) = call_expression_name(node, code) {
+            if sync_funcs.contains(&name) {
+                return true;
+            }
+        }
+    }
+    let mut cursor = node.walk();
+    if cursor.goto_first_child() {
+        loop {
+            if has_sync_call_in_node(cursor.node(), code, sync_funcs) {
+                return true;
+            }
+            if !cursor.goto_next_sibling() {
+                break;
+            }
+        }
+    }
+    false
+}
+
+fn call_expression_name(call: Node, code: &str) -> Option<String> {
+    let func = call.child_by_field_name("function")?;
+    match func.kind() {
+        "identifier" => Some(text(code, func).to_string()),
+        "selector_expression" => func
+            .child_by_field_name("field")
+            .map(|n| text(code, n).to_string()),
+        _ => None,
+    }
 }
 
 pub fn find_variable_at_position(tree: &Tree, code: &str, pos: Position) -> Option<VariableInfo> {

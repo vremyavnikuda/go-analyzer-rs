@@ -560,9 +560,8 @@ impl LanguageServer for Backend {
                 semantic.info
             } else {
                 match std::panic::catch_unwind(|| {
-                    find_variable_at_position_enhanced(&tree, &code, position).or_else(|| {
-                        find_variable_at_position(&tree, &code, position)
-                    })
+                    find_variable_at_position_enhanced(&tree, &code, position)
+                        .or_else(|| find_variable_at_position(&tree, &code, position))
                 }) {
                     Ok(Some(var_info)) => var_info,
                     Ok(None) => {
@@ -585,6 +584,7 @@ impl LanguageServer for Backend {
 
             let mut decorations = vec![];
             let mut lifecycle_points: Vec<LifecyclePoint> = Vec::new();
+            let sync_funcs = crate::analysis::collect_sync_functions(&tree, &code);
 
             decorations.push(Decoration {
                 range: var_info.declaration,
@@ -624,13 +624,15 @@ impl LanguageServer for Backend {
                     let mut hover_text = format!("Use of `{}`", var_info.name);
                     let is_reassignment = use_entry.reassign;
                     let is_captured = use_entry.captured;
+                    let mut has_race = false;
                     if is_reassignment {
                         decoration_kind = DecorationType::AliasReassigned;
                         hover_text = format!("Reassignment of `{}`", var_info.name);
                     } else if is_captured {
                         decoration_kind = DecorationType::AliasCaptured;
                         hover_text = format!("Captured `{}` in closure/goroutine", var_info.name);
-                    } else {
+                    }
+                    if !is_captured {
                         let is_in_goroutine_result =
                             match std::panic::catch_unwind(|| is_in_goroutine(&tree, use_range)) {
                                 Ok(result) => result,
@@ -641,7 +643,7 @@ impl LanguageServer for Backend {
                             };
                         if is_in_goroutine_result {
                             let race_severity = match std::panic::catch_unwind(|| {
-                                determine_race_severity(&tree, use_range, &code)
+                                determine_race_severity(&tree, use_range, &code, &sync_funcs)
                             }) {
                                 Ok(severity) => severity,
                                 Err(e) => {
@@ -650,6 +652,7 @@ impl LanguageServer for Backend {
                                 }
                             };
                             var_info.race_severity = race_severity.clone();
+                            has_race = true;
                             match race_severity {
                                 crate::types::RaceSeverity::High => {
                                     decoration_kind = DecorationType::Race;
@@ -676,7 +679,10 @@ impl LanguageServer for Backend {
                             var_info.potential_race = true;
                         }
                     }
-                    let decoration_label = decoration_label(&decoration_kind).to_string();
+                    if is_reassignment && has_race {
+                        hover_text = format!("{} (also reassignment)", hover_text);
+                    }
+                    let decoration_label_text = decoration_label(&decoration_kind).to_string();
                     let decoration_color = decoration_color_key(&decoration_kind).to_string();
                     decorations.push(Decoration {
                         range: use_range,
@@ -697,7 +703,7 @@ impl LanguageServer for Backend {
                                 pointer: var_info.is_pointer,
                                 reassign: is_reassignment,
                                 captured: is_captured,
-                                decoration: decoration_label,
+                                decoration: decoration_label_text,
                                 color_key: decoration_color,
                             },
                         });
@@ -726,11 +732,11 @@ impl LanguageServer for Backend {
                         }
                     };
                     let mut is_captured = false;
+                    let mut has_race = false;
                     if is_reassignment {
                         decoration_kind = DecorationType::AliasReassigned;
                         hover_text = format!("Reassignment of `{}`", var_info.name);
-                    }
-                    else {
+                    } else {
                         is_captured = match std::panic::catch_unwind(|| {
                             crate::analysis::is_variable_captured(
                                 &tree,
@@ -751,10 +757,7 @@ impl LanguageServer for Backend {
                                 format!("Captured `{}` in closure/goroutine", var_info.name);
                         }
                     }
-                    if !matches!(
-                        decoration_kind,
-                        DecorationType::AliasReassigned | DecorationType::AliasCaptured
-                    ) {
+                    if !is_captured {
                         let is_in_goroutine_result =
                             match std::panic::catch_unwind(|| is_in_goroutine(&tree, *use_range)) {
                                 Ok(result) => result,
@@ -766,7 +769,7 @@ impl LanguageServer for Backend {
 
                         if is_in_goroutine_result {
                             let race_severity = match std::panic::catch_unwind(|| {
-                                determine_race_severity(&tree, *use_range, &code)
+                                determine_race_severity(&tree, *use_range, &code, &sync_funcs)
                             }) {
                                 Ok(severity) => severity,
                                 Err(e) => {
@@ -775,6 +778,7 @@ impl LanguageServer for Backend {
                                 }
                             };
                             var_info.race_severity = race_severity.clone();
+                            has_race = true;
                             match race_severity {
                                 crate::types::RaceSeverity::High => {
                                     decoration_kind = DecorationType::Race;
@@ -801,7 +805,10 @@ impl LanguageServer for Backend {
                             var_info.potential_race = true;
                         }
                     }
-                    let decoration_label = decoration_label(&decoration_kind).to_string();
+                    if is_reassignment && has_race {
+                        hover_text = format!("{} (also reassignment)", hover_text);
+                    }
+                    let decoration_label_text = decoration_label(&decoration_kind).to_string();
                     let decoration_color = decoration_color_key(&decoration_kind).to_string();
                     decorations.push(Decoration {
                         range: *use_range,
@@ -822,7 +829,7 @@ impl LanguageServer for Backend {
                                 pointer: var_info.is_pointer,
                                 reassign: is_reassignment,
                                 captured: is_captured,
-                                decoration: decoration_label,
+                                decoration: decoration_label_text,
                                 color_key: decoration_color,
                             },
                         });
@@ -854,8 +861,7 @@ impl LanguageServer for Backend {
                     .await;
             }
             return Ok(Some(value));
-        }
-        else if params.command == "goanalyzer/graph" {
+        } else if params.command == "goanalyzer/graph" {
             self.client
                 .log_message(MessageType::INFO, "Executing goanalyzer/graph")
                 .await;
@@ -906,8 +912,7 @@ impl LanguageServer for Backend {
                 .send_notification::<ProgressNotification>("Graph built".to_string())
                 .await;
             return Ok(Some(value));
-        }
-        else if params.command == "goanalyzer/ast" {
+        } else if params.command == "goanalyzer/ast" {
             self.client
                 .log_message(MessageType::INFO, "Executing goanalyzer/ast")
                 .await;

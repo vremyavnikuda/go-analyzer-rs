@@ -59,5 +59,5 @@ jobs:
         working-directory: vscode
 
       - name: Build
-        run: npm run build
+        run: npm run compile
         working-directory: vscode

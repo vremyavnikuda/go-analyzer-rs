@@ -263,8 +263,7 @@ func unsafe() {
 
         let range_safe = Range::new(Position::new(4, 4), Position::new(4, 4));
         let sync_funcs: HashSet<String> = HashSet::new();
-        let severity_safe =
-            determine_race_severity(&tree_safe, range_safe, safe_code, &sync_funcs);
+        let severity_safe = determine_race_severity(&tree_safe, range_safe, safe_code, &sync_funcs);
         assert_eq!(severity_safe, RaceSeverity::Low);
         let range_unsafe = Range::new(Position::new(4, 8), Position::new(4, 8));
         let severity_unsafe =

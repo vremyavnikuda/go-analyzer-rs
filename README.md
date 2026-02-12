@@ -4,7 +4,6 @@
 [![Crates.io](https://img.shields.io/crates/v/go-analyzer.svg)](https://crates.io/crates/go-analyzer)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Coverage](https://github.com/vremyavnikuda/go-analyzer-rs/actions/workflows/coverage.yml/badge.svg)](https://github.com/vremyavnikuda/go-analyzer-rs/actions/workflows/coverage.yml)
-[![CI](https://github.com/vremyavnikuda/go-analyzer-rs/actions/workflows/rust.yml/badge.svg)](https://github.com/vremyavnikuda/go-analyzer-rs/actions/workflows/rust.yml)
 
 ## Project Description
 

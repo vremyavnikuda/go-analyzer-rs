@@ -652,7 +652,6 @@ impl LanguageServer for Backend {
                     let mut hover_text = format!("Use of `{}`", var_info.name);
                     let is_reassignment = use_entry.reassign;
                     let is_captured = use_entry.captured;
-                    let mut has_race = false;
                     if is_reassignment {
                         decoration_kind = DecorationType::AliasReassigned;
                         hover_text = format!("Reassignment of `{}`", var_info.name);
@@ -670,6 +669,11 @@ impl LanguageServer for Backend {
                                 }
                             };
                         if is_in_goroutine_result && is_decl_global {
+                            let race_access = if is_reassignment {
+                                "write access"
+                            } else {
+                                "read access"
+                            };
                             let race_severity = match std::panic::catch_unwind(|| {
                                 determine_race_severity(&tree, use_range, &code, &sync_funcs)
                             }) {
@@ -680,35 +684,31 @@ impl LanguageServer for Backend {
                                 }
                             };
                             var_info.race_severity = race_severity.clone();
-                            has_race = true;
                             match race_severity {
                                 crate::types::RaceSeverity::High => {
                                     decoration_kind = DecorationType::Race;
                                     hover_text = format!(
-                                        "Use of `{}` in goroutine - HIGH PRIORITY data race!",
-                                        var_info.name
+                                        "Use of `{}` in goroutine - HIGH PRIORITY data race ({})",
+                                        var_info.name, race_access
                                     );
                                 }
                                 crate::types::RaceSeverity::Medium => {
                                     decoration_kind = DecorationType::Race;
                                     hover_text = format!(
-                                        "Use of `{}` in goroutine - potential data race",
-                                        var_info.name
+                                        "Use of `{}` in goroutine - potential data race ({})",
+                                        var_info.name, race_access
                                     );
                                 }
                                 crate::types::RaceSeverity::Low => {
                                     decoration_kind = DecorationType::RaceLow;
                                     hover_text = format!(
-                                        "Use of `{}` in goroutine - LOW PRIORITY (sync detected)",
-                                        var_info.name
+                                        "Use of `{}` in goroutine - LOW PRIORITY (sync detected, {})",
+                                        var_info.name, race_access
                                     );
                                 }
                             }
                             var_info.potential_race = true;
                         }
-                    }
-                    if is_reassignment && has_race {
-                        hover_text = format!("{} (also reassignment)", hover_text);
                     }
                     let decoration_label_text = decoration_label(&decoration_kind).to_string();
                     let decoration_color = decoration_color_key(&decoration_kind).to_string();
@@ -760,7 +760,6 @@ impl LanguageServer for Backend {
                         }
                     };
                     let mut is_captured = false;
-                    let mut has_race = false;
                     if is_reassignment {
                         decoration_kind = DecorationType::AliasReassigned;
                         hover_text = format!("Reassignment of `{}`", var_info.name);
@@ -796,6 +795,11 @@ impl LanguageServer for Backend {
                             };
 
                         if is_in_goroutine_result && is_decl_global {
+                            let race_access = if is_reassignment {
+                                "write access"
+                            } else {
+                                "read access"
+                            };
                             let race_severity = match std::panic::catch_unwind(|| {
                                 determine_race_severity(&tree, *use_range, &code, &sync_funcs)
                             }) {
@@ -806,35 +810,31 @@ impl LanguageServer for Backend {
                                 }
                             };
                             var_info.race_severity = race_severity.clone();
-                            has_race = true;
                             match race_severity {
                                 crate::types::RaceSeverity::High => {
                                     decoration_kind = DecorationType::Race;
                                     hover_text = format!(
-                                        "Use of `{}` in goroutine - HIGH PRIORITY data race!",
-                                        var_info.name
+                                        "Use of `{}` in goroutine - HIGH PRIORITY data race ({})",
+                                        var_info.name, race_access
                                     );
                                 }
                                 crate::types::RaceSeverity::Medium => {
                                     decoration_kind = DecorationType::Race;
                                     hover_text = format!(
-                                        "Use of `{}` in goroutine - potential data race",
-                                        var_info.name
+                                        "Use of `{}` in goroutine - potential data race ({})",
+                                        var_info.name, race_access
                                     );
                                 }
                                 crate::types::RaceSeverity::Low => {
                                     decoration_kind = DecorationType::RaceLow;
                                     hover_text = format!(
-                                        "Use of `{}` in goroutine - LOW PRIORITY (sync detected)",
-                                        var_info.name
+                                        "Use of `{}` in goroutine - LOW PRIORITY (sync detected, {})",
+                                        var_info.name, race_access
                                     );
                                 }
                             }
                             var_info.potential_race = true;
                         }
-                    }
-                    if is_reassignment && has_race {
-                        hover_text = format!("{} (also reassignment)", hover_text);
                     }
                     let decoration_label_text = decoration_label(&decoration_kind).to_string();
                     let decoration_color = decoration_color_key(&decoration_kind).to_string();

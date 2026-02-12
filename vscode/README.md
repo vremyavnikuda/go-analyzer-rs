@@ -6,7 +6,7 @@
 
 **Go Analyzer** provides quick, visual feedback about variable lifecycles and potential concurrency issues in Go directly inside VS Code.
 
-![Go Analyzer](img/img.png)
+![Go Analyzer](../img/img.png)
 
 ## Description
 

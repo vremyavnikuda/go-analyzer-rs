@@ -8,7 +8,7 @@ description = "A high-performance Language Server Protocol (LSP) implementation 
 homepage = "https://github.com/vremyavnikuda/go-analyzer-rs"
 repository = "https://github.com/vremyavnikuda/go-analyzer-rs"
 documentation = "https://github.com/vremyavnikuda/go-analyzer-rs#readme"
-readme = "README_CRATES.md"
+readme = "README.md"
 keywords = ["go", "lsp", "static-analysis", "concurrency", "race-detection"]
 categories = [
     "development-tools",

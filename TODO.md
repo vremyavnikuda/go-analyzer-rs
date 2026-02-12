@@ -1,10 +1,14 @@
 # TODO
 
-- [ ] UI: redesign the display of additional signals (race + reassign) to make it informative and visually noise-free.
-- [x] Hover text: refine race messages with read/write context to reduce ambiguity.
-- [ ] goanalyzer/graph все еще торчит в API/сервере, хотя фича фактически не используется: -> удалить
-- [ ] RaceLow может выставляться слишком оптимистично.достаточно любой синхронизации где-то в горутине, чтобы занизить риск. ->  подумать как сделать более надежное решение
-- [ ] Потенциально рискованный block_on внутри async-обработчика: backend.rs (lines 922-924). ->  разобраться с этим 
-- [ ] Битые/устаревшие метаданные:
-- - [ ] badge на несуществующий workflow: README.md (line 7) (rust.yml). -> удали его тогда
-- - [ ] README.md с неверным путем к картинке (img.png от корня репо). ->  это нужно исправить 
+## Analysis Logic
+- [ ] Remove `goanalyzer/graph` command and server path if graph feature is no longer used.
+- [ ] Improve `RaceLow` detection: avoid downgrading risk when unrelated synchronization exists elsewhere in goroutine.
+- [ ] Replace `block_on` in async flow in `src/backend.rs` (around graph path) with fully async handling.
+
+## UI
+- [ ] Redesign combined signal display (`race` + `reassign`) to keep context clear without visual noise.
+- [x] Refine hover race messages with read/write access context.
+
+## Metadata
+- [x] Remove stale badge for non-existing workflow (`rust.yml`) from `README.md`.
+- [x] Fix incorrect image path in `vscode/README.md`.

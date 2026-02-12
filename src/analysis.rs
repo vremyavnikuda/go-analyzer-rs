@@ -9,12 +9,19 @@ use std::collections::HashSet;
 use tower_lsp::lsp_types::{Position, Range};
 use tree_sitter::{Node, Point, Tree};
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FieldTypeKind {
+    Slice,
+    String,
+    Map,
+    Other,
+}
+
 pub fn has_synchronization_in_block(tree: &Tree, range: Range, code: &str) -> bool {
     let target = Point {
         row: range.start.line as usize,
         column: range.start.character as usize,
     };
-
     let mut enclosing: Option<Node> = None;
     let mut stack = vec![tree.root_node()];
     while let Some(node) = stack.pop() {
@@ -35,17 +42,11 @@ pub fn has_synchronization_in_block(tree: &Tree, range: Range, code: &str) -> bo
         Some(b) => b,
         None => return false,
     };
-
     let mut cursor = block.walk();
     if cursor.goto_first_child() {
         loop {
             let node = cursor.node();
             let kind = node.kind();
-            eprintln!(
-                "[block_child] kind: {} bytes: {:?}",
-                kind,
-                node.byte_range()
-            );
             if kind != "{" && kind != "}" && find_sync_in_node(node, code) {
                 return true;
             }
@@ -59,7 +60,6 @@ pub fn has_synchronization_in_block(tree: &Tree, range: Range, code: &str) -> bo
 
 fn find_sync_in_node(node: Node, code: &str) -> bool {
     if node.kind() == "call_expression" {
-        eprintln!("[has_sync] call_expression: {:?}", text(code, node));
         if is_mutex_call(node, code) || is_atomic_call(node, code) {
             return true;
         }
@@ -113,36 +113,319 @@ pub fn determine_race_severity(
     tree: &Tree,
     range: Range,
     code: &str,
+    is_write: bool,
     sync_funcs: &HashSet<String>,
 ) -> RaceSeverity {
+    if is_access_synchronized(tree, range, code, sync_funcs) {
+        RaceSeverity::Low
+    } else if is_in_goroutine(tree, range) || is_write {
+        RaceSeverity::High
+    } else {
+        RaceSeverity::Medium
+    }
+}
+
+fn is_access_synchronized(
+    tree: &Tree,
+    range: Range,
+    code: &str,
+    sync_funcs: &HashSet<String>,
+) -> bool {
     let target_point = Point {
         row: range.start.line as usize,
         column: range.start.character as usize,
     };
-
-    if let Some(goroutine_node) = find_goroutine_context(tree.root_node(), target_point) {
-        if has_synchronization_in_goroutine(goroutine_node, target_point, code, sync_funcs) {
-            RaceSeverity::Low
-        } else {
-            RaceSeverity::High
+    let target_node = match find_node_at_position(tree.root_node(), target_point) {
+        Some(node) => node,
+        None => return has_synchronization_in_block(tree, range, code),
+    };
+    let mut current = Some(target_node);
+    while let Some(candidate) = current {
+        if candidate.kind() == "call_expression" {
+            if is_mutex_call(candidate, code) || is_atomic_call(candidate, code) {
+                return true;
+            }
+            if let Some(name) = call_expression_name(candidate, code) {
+                if sync_funcs.contains(&name) {
+                    return true;
+                }
+            }
         }
-    } else if has_synchronization_in_block(tree, range, code) {
-        RaceSeverity::Low
-    } else {
-        RaceSeverity::High
+        current = candidate.parent();
     }
+    current = Some(target_node);
+    while let Some(candidate) = current {
+        if candidate.kind() == "block" {
+            return has_active_lock_for_target(candidate, target_node, code);
+        }
+        current = candidate.parent();
+    }
+    false
 }
 
-fn has_synchronization_in_goroutine(
-    goroutine_node: tree_sitter::Node,
-    target_point: Point,
+pub fn is_access_synchronized_at(
+    tree: &Tree,
+    range: Range,
     code: &str,
     sync_funcs: &HashSet<String>,
 ) -> bool {
-    if find_sync_in_node(goroutine_node, code) {
-        return true;
+    is_access_synchronized(tree, range, code, sync_funcs)
+}
+
+pub fn is_access_in_atomic_context(tree: &Tree, range: Range, code: &str) -> bool {
+    let target_point = Point {
+        row: range.start.line as usize,
+        column: range.start.character as usize,
+    };
+    let mut current = find_node_at_position(tree.root_node(), target_point);
+    while let Some(node) = current {
+        if node.kind() == "call_expression" && is_atomic_call(node, code) {
+            return true;
+        }
+        current = node.parent();
     }
-    has_sync_call_in_node(goroutine_node, target_point, code, sync_funcs)
+    false
+}
+
+pub fn is_struct_field_declaration(tree: &Tree, range: Range) -> bool {
+    let target_point = Point {
+        row: range.start.line as usize,
+        column: range.start.character as usize,
+    };
+    let mut current = find_node_at_position(tree.root_node(), target_point);
+    while let Some(node) = current {
+        if node.kind() == "field_identifier" {
+            let mut parent = node.parent();
+            while let Some(p) = parent {
+                if p.kind() == "field_declaration" {
+                    return true;
+                }
+                if p.kind() == "function_declaration" || p.kind() == "method_declaration" {
+                    break;
+                }
+                parent = p.parent();
+            }
+        }
+        current = node.parent();
+    }
+    false
+}
+
+pub fn is_heavy_work_in_call_context(tree: &Tree, range: Range, code: &str) -> bool {
+    let heavy_full_names = [
+        "fmt.Println",
+        "fmt.Printf",
+        "fmt.Sprintf",
+        "sort.Slice",
+        "sort.SliceStable",
+    ];
+    let heavy_simple_names = ["append", "copy"];
+    let target_point = Point {
+        row: range.start.line as usize,
+        column: range.start.character as usize,
+    };
+    let mut current = find_node_at_position(tree.root_node(), target_point);
+    while let Some(node) = current {
+        if node.kind() == "call_expression" {
+            if let Some(function) = node.child_by_field_name("function") {
+                let name = text(code, function).trim().to_string();
+                if heavy_full_names.iter().any(|n| *n == name)
+                    || heavy_simple_names.iter().any(|n| *n == name)
+                {
+                    return true;
+                }
+            }
+        }
+        current = node.parent();
+    }
+    false
+}
+
+pub fn field_type_kind_at_declaration(tree: &Tree, range: Range, code: &str) -> FieldTypeKind {
+    let target_point = Point {
+        row: range.start.line as usize,
+        column: range.start.character as usize,
+    };
+    let mut current = find_node_at_position(tree.root_node(), target_point);
+    while let Some(node) = current {
+        if node.kind() == "field_declaration" {
+            if let Some(typ) = node.child_by_field_name("type") {
+                return match typ.kind() {
+                    "slice_type" => FieldTypeKind::Slice,
+                    "map_type" => FieldTypeKind::Map,
+                    "type_identifier" => {
+                        if text(code, typ) == "string" {
+                            FieldTypeKind::String
+                        } else {
+                            FieldTypeKind::Other
+                        }
+                    }
+                    _ => FieldTypeKind::Other,
+                };
+            }
+            return FieldTypeKind::Other;
+        }
+        current = node.parent();
+    }
+    FieldTypeKind::Other
+}
+
+pub fn detect_retention_pattern(
+    tree: &Tree,
+    range: Range,
+    field_kind: FieldTypeKind,
+) -> Option<&'static str> {
+    if !matches!(
+        field_kind,
+        FieldTypeKind::Slice | FieldTypeKind::String | FieldTypeKind::Map
+    ) {
+        return None;
+    }
+    let target_point = Point {
+        row: range.start.line as usize,
+        column: range.start.character as usize,
+    };
+    let target_node = find_node_at_position(tree.root_node(), target_point)?;
+    let rhs = assignment_rhs_for_target(target_node)?;
+    match field_kind {
+        FieldTypeKind::Slice | FieldTypeKind::String => {
+            if rhs.kind() == "slice_expression" {
+                return Some("Retention risk: sub-slice/sub-string may keep large backing memory");
+            }
+        }
+        FieldTypeKind::Map => {
+            if matches!(
+                rhs.kind(),
+                "identifier" | "selector_expression" | "index_expression"
+            ) {
+                return Some("Retention risk: map reference can keep large object graph alive");
+            }
+        }
+        FieldTypeKind::Other => {}
+    }
+    None
+}
+
+pub fn is_value_copy_context(tree: &Tree, range: Range, code: &str) -> bool {
+    let target_point = Point {
+        row: range.start.line as usize,
+        column: range.start.character as usize,
+    };
+    let target_node = match find_node_at_position(tree.root_node(), target_point) {
+        Some(node) => node,
+        None => return false,
+    };
+
+    if is_under_address_of(target_node, code) {
+        return false;
+    }
+    let mut current = Some(target_node);
+    while let Some(node) = current {
+        let parent = match node.parent() {
+            Some(p) => p,
+            None => break,
+        };
+        match parent.kind() {
+            "argument_list" | "expression_list" => {
+                if let Some(grand) = parent.parent() {
+                    if matches!(
+                        grand.kind(),
+                        "call_expression"
+                            | "assignment_statement"
+                            | "short_var_declaration"
+                            | "return_statement"
+                    ) {
+                        return true;
+                    }
+                }
+            }
+            _ => {}
+        }
+        current = Some(parent);
+    }
+    false
+}
+
+pub fn access_context_key(tree: &Tree, range: Range) -> Option<(u32, u32, u32, u32)> {
+    let target_point = Point {
+        row: range.start.line as usize,
+        column: range.start.character as usize,
+    };
+    let mut current = find_node_at_position(tree.root_node(), target_point);
+    while let Some(node) = current {
+        if matches!(
+            node.kind(),
+            "function_declaration" | "method_declaration" | "function_literal"
+        ) {
+            let r = node_to_range(node);
+            return Some((r.start.line, r.start.character, r.end.line, r.end.character));
+        }
+        current = node.parent();
+    }
+    None
+}
+
+fn assignment_rhs_for_target(target_node: Node) -> Option<Node> {
+    let target_start = target_node.start_byte();
+    let mut current = Some(target_node);
+    while let Some(node) = current {
+        if matches!(
+            node.kind(),
+            "assignment_statement" | "short_var_declaration"
+        ) {
+            let left = node.child_by_field_name("left")?;
+            if left.kind() != "expression_list" {
+                current = node.parent();
+                continue;
+            }
+
+            let mut lhs_index: Option<usize> = None;
+            for idx in 0..left.named_child_count() {
+                if let Some(lhs) = left.named_child(idx) {
+                    if lhs.start_byte() <= target_start && target_start <= lhs.end_byte() {
+                        lhs_index = Some(idx);
+                        break;
+                    }
+                }
+            }
+            let lhs_index = lhs_index?;
+            let right = node.child_by_field_name("right")?;
+            if right.kind() != "expression_list" {
+                return Some(right);
+            }
+            if let Some(rhs) = right.named_child(lhs_index) {
+                return Some(rhs);
+            }
+            return right.named_child(0);
+        }
+        current = node.parent();
+    }
+    None
+}
+
+fn is_under_address_of(node: Node, code: &str) -> bool {
+    let mut current = Some(node);
+    while let Some(candidate) = current {
+        if candidate.kind() == "unary_expression" {
+            let txt = text(code, candidate).trim_start();
+            if txt.starts_with('&') {
+                return true;
+            }
+        }
+        if matches!(
+            candidate.kind(),
+            "assignment_statement"
+                | "short_var_declaration"
+                | "return_statement"
+                | "call_expression"
+                | "function_declaration"
+                | "method_declaration"
+        ) {
+            break;
+        }
+        current = candidate.parent();
+    }
+    false
 }
 
 pub fn collect_sync_functions(tree: &Tree, code: &str) -> HashSet<String> {
@@ -173,38 +456,6 @@ pub fn collect_sync_functions(tree: &Tree, code: &str) -> HashSet<String> {
     names
 }
 
-fn has_sync_call_in_node(
-    node: Node,
-    target_point: Point,
-    code: &str,
-    sync_funcs: &HashSet<String>,
-) -> bool {
-    if node.start_position() > target_point || target_point > node.end_position() {
-        return false;
-    }
-    if node.kind() == "call_expression" {
-        if node.start_position() <= target_point && target_point <= node.end_position() {
-            if let Some(name) = call_expression_name(node, code) {
-                if sync_funcs.contains(&name) {
-                    return true;
-                }
-            }
-        }
-    }
-    let mut cursor = node.walk();
-    if cursor.goto_first_child() {
-        loop {
-            if has_sync_call_in_node(cursor.node(), target_point, code, sync_funcs) {
-                return true;
-            }
-            if !cursor.goto_next_sibling() {
-                break;
-            }
-        }
-    }
-    false
-}
-
 fn call_expression_name(call: Node, code: &str) -> Option<String> {
     let func = call.child_by_field_name("function")?;
     match func.kind() {
@@ -216,13 +467,104 @@ fn call_expression_name(call: Node, code: &str) -> Option<String> {
     }
 }
 
+fn has_active_lock_for_target(block: Node, target_node: Node, code: &str) -> bool {
+    let target_context = find_execution_context(target_node);
+    let target_byte = target_node.start_byte();
+    let mut calls = Vec::new();
+    let mut stack = vec![block];
+    while let Some(node) = stack.pop() {
+        if node.kind() == "call_expression" {
+            calls.push(node);
+        }
+        for i in (0..node.child_count()).rev() {
+            if let Some(child) = node.child(i) {
+                stack.push(child);
+            }
+        }
+    }
+    calls.sort_by_key(|n| n.start_byte());
+    use std::collections::HashMap;
+    let mut lock_depths: HashMap<String, i32> = HashMap::new();
+    for call in calls {
+        if call.start_byte() > target_byte {
+            break;
+        }
+        let same_context = match (target_context, find_execution_context(call)) {
+            (Some(target), Some(current)) => same_scope(target, current),
+            (None, None) => true,
+            _ => false,
+        };
+        if !same_context {
+            continue;
+        }
+        let (mutex_key, delta) = match lock_event(call, code) {
+            Some(event) => event,
+            None => continue,
+        };
+        let mut is_deferred = false;
+        let mut current = Some(call);
+        while let Some(candidate) = current {
+            if candidate.kind() == "defer_statement" {
+                is_deferred = true;
+                break;
+            }
+            current = candidate.parent();
+        }
+        if delta < 0 && is_deferred {
+            continue;
+        }
+        let depth = lock_depths.entry(mutex_key.clone()).or_insert(0);
+        *depth += delta;
+        if *depth <= 0 {
+            lock_depths.remove(&mutex_key);
+        }
+    }
+    lock_depths.values().any(|depth| *depth > 0)
+}
+
+fn find_execution_context(node: Node) -> Option<Node> {
+    let mut current = Some(node);
+    while let Some(candidate) = current {
+        if matches!(
+            candidate.kind(),
+            "function_declaration" | "method_declaration" | "function_literal"
+        ) {
+            return Some(candidate);
+        }
+        current = candidate.parent();
+    }
+    None
+}
+
+fn lock_event(call: Node, code: &str) -> Option<(String, i32)> {
+    let function = call.child_by_field_name("function")?;
+    if function.kind() != "selector_expression" {
+        return None;
+    }
+    let operand = function.child_by_field_name("operand")?;
+    let field = function.child_by_field_name("field")?;
+    let method = text(code, field);
+    let delta = match method {
+        "Lock" | "RLock" => 1,
+        "Unlock" | "RUnlock" => -1,
+        _ => return None,
+    };
+    let key = text(code, operand).trim();
+    if key.is_empty() {
+        return None;
+    }
+    Some((key.to_string(), delta))
+}
+
 pub fn find_variable_at_position(tree: &Tree, code: &str, pos: Position) -> Option<VariableInfo> {
     let target_point = Point {
         row: pos.line as usize,
         column: pos.character as usize,
     };
-
     let target_node = find_node_at_position(tree.root_node(), target_point)?;
+    if is_selector_call_symbol(target_node) {
+        return None;
+    }
     let var_name = extract_variable_name(target_node, code)?;
     if is_field_identifier_context(target_node, target_point) {
         return collect_field_info(tree, code, &var_name, target_point);
@@ -432,6 +774,35 @@ fn is_field_identifier_context(node: tree_sitter::Node, target: Point) -> bool {
     false
 }
 
+fn is_selector_call_symbol(node: tree_sitter::Node) -> bool {
+    let selector = match node.kind() {
+        "selector_expression" => Some(node),
+        "field_identifier" | "identifier" => {
+            let parent = node.parent();
+            match parent {
+                Some(p) if p.kind() == "selector_expression" => Some(p),
+                _ => None,
+            }
+        }
+        _ => None,
+    };
+    let selector = match selector {
+        Some(s) => s,
+        None => return false,
+    };
+    let parent = match selector.parent() {
+        Some(p) => p,
+        None => return false,
+    };
+    if parent.kind() != "call_expression" {
+        return false;
+    }
+    match parent.child_by_field_name("function") {
+        Some(function_node) => function_node == selector,
+        None => false,
+    }
+}
+
 fn collect_field_info(
     tree: &Tree,
     code: &str,
@@ -531,7 +902,7 @@ fn collect_field_info(
         &mut var_info,
         &mut found_declaration,
     );
-    if found_declaration || !var_info.uses.is_empty() {
+    if found_declaration {
         Some(var_info)
     } else {
         None

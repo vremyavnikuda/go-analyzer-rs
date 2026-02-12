@@ -54,17 +54,14 @@ func UpdateNames(users []User, suffix string) {
 
 func main() {
 	store := NewStore()
-
 	store.Add(&User{ID: 1, Name: "Ann"})
 	store.Add(&User{ID: 2, Name: "Bob"})
-
 	// Shadowing and := mixed
 	x := 10
 	if x := x + 1; x > 10 {
 		fmt.Println("inner x", x)
 	}
 	fmt.Println("outer x", x)
-
 	// Type switch with implicit variable
 	var any interface{} = store
 	switch v := any.(type) {
@@ -73,7 +70,6 @@ func main() {
 	default:
 		_ = v
 	}
-
 	// Goroutines and capture
 	var wg sync.WaitGroup
 	for i := 0; i < 3; i++ {
@@ -86,20 +82,16 @@ func main() {
 			}
 		}(i)
 	}
-
 	// Capture of outer variable
 	count := 0
 	func() {
 		count++
 	}()
-
 	// Race-like pattern (no lock around total)
 	go func() {
 		store.total++
 	}()
-
 	wg.Wait()
-
 	snap := store.Snapshot()
 	UpdateNames(snap, "_ok")
 	fmt.Println(len(snap))

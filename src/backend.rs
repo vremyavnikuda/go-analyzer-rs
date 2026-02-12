@@ -1,9 +1,15 @@
 use crate::analysis::{
-    build_graph_data, count_entities, determine_race_severity, find_variable_at_position,
-    find_variable_at_position_enhanced, is_in_goroutine,
+    access_context_key, build_graph_data, count_entities, detect_retention_pattern,
+    determine_race_severity, field_type_kind_at_declaration, find_variable_at_position,
+    find_variable_at_position_enhanced, is_access_in_atomic_context, is_access_synchronized_at,
+    is_heavy_work_in_call_context, is_in_goroutine, is_struct_field_declaration,
+    is_value_copy_context, FieldTypeKind,
 };
 use crate::semantic::{resolve_semantic_variable, SemanticConfig};
-use crate::types::{Decoration, DecorationType, ProgressNotification, RaceSeverity};
+use crate::types::{
+    Decoration, DecorationDiagnostic, DecorationDiagnosticSeverity, DecorationType,
+    ProgressNotification, RaceSeverity,
+};
 
 fn decoration_label(kind: &DecorationType) -> &'static str {
     match kind {
@@ -29,7 +35,7 @@ fn decoration_color_key(kind: &DecorationType) -> &'static str {
     }
 }
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 use std::time::{Duration, SystemTime};
 use tokio::sync::Mutex;
@@ -103,6 +109,25 @@ pub struct LifecycleExpected {
     pub captured: bool,
     pub decoration: String,
     pub color_key: String,
+}
+
+#[derive(Clone)]
+struct UseMeta {
+    range: Range,
+    reassign: bool,
+    captured: bool,
+}
+
+fn make_diagnostic(
+    severity: DecorationDiagnosticSeverity,
+    code: &str,
+    message: String,
+) -> DecorationDiagnostic {
+    DecorationDiagnostic {
+        severity,
+        code: code.to_string(),
+        message,
+    }
 }
 
 const MAX_CACHED_TREES: usize = 20;
@@ -618,6 +643,7 @@ impl LanguageServer for Backend {
                 range: var_info.declaration,
                 kind: DecorationType::Declaration,
                 hover_text: format!("Declaration of `{}`", var_info.name),
+                diagnostic: None,
             });
 
             if dump_json {
@@ -641,227 +667,392 @@ impl LanguageServer for Backend {
                 });
             }
 
-            if let Some(uses) = semantic_uses.take() {
-                for use_entry in uses {
-                    let use_range = use_entry.range;
-                    let mut decoration_kind = if var_info.is_pointer {
-                        DecorationType::Pointer
-                    } else {
-                        DecorationType::Use
-                    };
-                    let mut hover_text = format!("Use of `{}`", var_info.name);
-                    let is_reassignment = use_entry.reassign;
-                    let is_captured = use_entry.captured;
-                    if is_reassignment {
-                        decoration_kind = DecorationType::AliasReassigned;
-                        hover_text = format!("Reassignment of `{}`", var_info.name);
-                    } else if is_captured {
-                        decoration_kind = DecorationType::AliasCaptured;
-                        hover_text = format!("Captured `{}` in closure/goroutine", var_info.name);
-                    }
-                    if !is_captured {
-                        let is_in_goroutine_result =
-                            match std::panic::catch_unwind(|| is_in_goroutine(&tree, use_range)) {
-                                Ok(result) => result,
-                                Err(e) => {
-                                    eprintln!("Panic occurred in is_in_goroutine: {:?}", e);
-                                    false
-                                }
-                            };
-                        if is_in_goroutine_result && is_decl_global {
-                            let race_access = if is_reassignment {
-                                "write access"
-                            } else {
-                                "read access"
-                            };
-                            let race_severity = match std::panic::catch_unwind(|| {
-                                determine_race_severity(&tree, use_range, &code, &sync_funcs)
-                            }) {
-                                Ok(severity) => severity,
-                                Err(e) => {
-                                    eprintln!("Panic occurred in determine_race_severity: {:?}", e);
-                                    RaceSeverity::Medium
-                                }
-                            };
-                            var_info.race_severity = race_severity.clone();
-                            match race_severity {
-                                crate::types::RaceSeverity::High => {
-                                    decoration_kind = DecorationType::Race;
-                                    hover_text = format!(
-                                        "Use of `{}` in goroutine - HIGH PRIORITY data race ({})",
-                                        var_info.name, race_access
-                                    );
-                                }
-                                crate::types::RaceSeverity::Medium => {
-                                    decoration_kind = DecorationType::Race;
-                                    hover_text = format!(
-                                        "Use of `{}` in goroutine - potential data race ({})",
-                                        var_info.name, race_access
-                                    );
-                                }
-                                crate::types::RaceSeverity::Low => {
-                                    decoration_kind = DecorationType::RaceLow;
-                                    hover_text = format!(
-                                        "Use of `{}` in goroutine - LOW PRIORITY (sync detected, {})",
-                                        var_info.name, race_access
-                                    );
-                                }
-                            }
-                            var_info.potential_race = true;
-                        }
-                    }
-                    let decoration_label_text = decoration_label(&decoration_kind).to_string();
-                    let decoration_color = decoration_color_key(&decoration_kind).to_string();
-                    decorations.push(Decoration {
-                        range: use_range,
-                        kind: decoration_kind,
-                        hover_text,
-                    });
-                    if dump_json {
-                        lifecycle_points.push(LifecyclePoint {
-                            name: format!("{}_use_{}", var_info.name, lifecycle_points.len()),
-                            file: uri.to_string(),
-                            pos: LifecyclePos {
-                                line: use_range.start.line,
-                                col: use_range.start.character,
-                            },
-                            expected: LifecycleExpected {
-                                var: var_info.name.clone(),
-                                kind: "use".to_string(),
-                                pointer: var_info.is_pointer,
-                                reassign: is_reassignment,
-                                captured: is_captured,
-                                decoration: decoration_label_text,
-                                color_key: decoration_color,
-                            },
-                        });
-                    }
-                }
+            let use_metas: Vec<UseMeta> = if let Some(uses) = semantic_uses.take() {
+                uses.into_iter()
+                    .map(|u| UseMeta {
+                        range: u.range,
+                        reassign: u.reassign,
+                        captured: u.captured,
+                    })
+                    .collect()
             } else {
-                for use_range in var_info.uses.iter() {
-                    let mut decoration_kind = if var_info.is_pointer {
-                        DecorationType::Pointer
-                    } else {
-                        DecorationType::Use
-                    };
-                    let mut hover_text = format!("Use of `{}`", var_info.name);
-                    let is_reassignment = match std::panic::catch_unwind(|| {
-                        crate::analysis::is_variable_reassignment(
-                            &tree,
-                            &var_info.name,
-                            *use_range,
-                            &code,
-                        )
-                    }) {
-                        Ok(result) => result,
-                        Err(e) => {
-                            eprintln!("Panic occurred in is_variable_reassignment: {:?}", e);
-                            false
-                        }
-                    };
-                    let mut is_captured = false;
-                    if is_reassignment {
-                        decoration_kind = DecorationType::AliasReassigned;
-                        hover_text = format!("Reassignment of `{}`", var_info.name);
-                    } else {
-                        is_captured = match std::panic::catch_unwind(|| {
-                            crate::analysis::is_variable_captured(
+                var_info
+                    .uses
+                    .iter()
+                    .map(|use_range| {
+                        let reassign = match std::panic::catch_unwind(|| {
+                            crate::analysis::is_variable_reassignment(
                                 &tree,
                                 &var_info.name,
                                 *use_range,
-                                var_info.declaration,
+                                &code,
                             )
                         }) {
                             Ok(result) => result,
                             Err(e) => {
-                                eprintln!("Panic occurred in is_variable_captured: {:?}", e);
+                                eprintln!("Panic occurred in is_variable_reassignment: {:?}", e);
                                 false
                             }
                         };
-                        if is_captured {
-                            decoration_kind = DecorationType::AliasCaptured;
-                            hover_text =
-                                format!("Captured `{}` in closure/goroutine", var_info.name);
-                        }
-                    }
-                    if !is_captured {
-                        let is_in_goroutine_result =
-                            match std::panic::catch_unwind(|| is_in_goroutine(&tree, *use_range)) {
+                        let captured = if reassign {
+                            false
+                        } else {
+                            match std::panic::catch_unwind(|| {
+                                crate::analysis::is_variable_captured(
+                                    &tree,
+                                    &var_info.name,
+                                    *use_range,
+                                    var_info.declaration,
+                                )
+                            }) {
                                 Ok(result) => result,
                                 Err(e) => {
-                                    eprintln!("Panic occurred in is_in_goroutine: {:?}", e);
+                                    eprintln!("Panic occurred in is_variable_captured: {:?}", e);
                                     false
                                 }
-                            };
+                            }
+                        };
+                        UseMeta {
+                            range: *use_range,
+                            reassign,
+                            captured,
+                        }
+                    })
+                    .collect()
+            };
 
-                        if is_in_goroutine_result && is_decl_global {
-                            let race_access = if is_reassignment {
-                                "write access"
-                            } else {
-                                "read access"
-                            };
-                            let race_severity = match std::panic::catch_unwind(|| {
-                                determine_race_severity(&tree, *use_range, &code, &sync_funcs)
-                            }) {
-                                Ok(severity) => severity,
-                                Err(e) => {
-                                    eprintln!("Panic occurred in determine_race_severity: {:?}", e);
-                                    RaceSeverity::Medium
-                                }
-                            };
-                            var_info.race_severity = race_severity.clone();
-                            match race_severity {
-                                crate::types::RaceSeverity::High => {
-                                    decoration_kind = DecorationType::Race;
-                                    hover_text = format!(
-                                        "Use of `{}` in goroutine - HIGH PRIORITY data race ({})",
-                                        var_info.name, race_access
+            let is_field_symbol = is_struct_field_declaration(&tree, var_info.declaration);
+            let field_type_kind = if is_field_symbol {
+                field_type_kind_at_declaration(&tree, var_info.declaration, &code)
+            } else {
+                FieldTypeKind::Other
+            };
+            let mut atomic_map: HashMap<String, bool> = HashMap::new();
+            let mut sync_map: HashMap<String, bool> = HashMap::new();
+            let mut heavy_map: HashMap<String, bool> = HashMap::new();
+            let mut saw_atomic = false;
+            let mut saw_non_atomic = false;
+            let mut saw_sync = false;
+            let mut saw_unsync = false;
+
+            if is_field_symbol {
+                for use_meta in &use_metas {
+                    let key = format!(
+                        "{}:{}:{}:{}",
+                        use_meta.range.start.line,
+                        use_meta.range.start.character,
+                        use_meta.range.end.line,
+                        use_meta.range.end.character
+                    );
+                    let in_atomic: bool = std::panic::catch_unwind(|| {
+                        is_access_in_atomic_context(&tree, use_meta.range, &code)
+                    })
+                    .unwrap_or_default();
+                    let in_sync: bool = std::panic::catch_unwind(|| {
+                        is_access_synchronized_at(&tree, use_meta.range, &code, &sync_funcs)
+                    })
+                    .unwrap_or_default();
+                    let heavy_under_lock = in_sync
+                        && std::panic::catch_unwind(|| {
+                            is_heavy_work_in_call_context(&tree, use_meta.range, &code)
+                        })
+                        .unwrap_or_default();
+
+                    atomic_map.insert(key.clone(), in_atomic);
+                    sync_map.insert(key.clone(), in_sync);
+                    heavy_map.insert(key, heavy_under_lock);
+
+                    if in_atomic {
+                        saw_atomic = true;
+                    } else {
+                        saw_non_atomic = true;
+                    }
+                    if in_sync {
+                        saw_sync = true;
+                    } else {
+                        saw_unsync = true;
+                    }
+                }
+            }
+
+            let has_mixed_atomic = is_field_symbol && saw_atomic && saw_non_atomic;
+            let has_lock_coverage_violation = is_field_symbol && saw_sync && saw_unsync;
+            let mut read_before_write_keys: HashSet<String> = HashSet::new();
+            if is_field_symbol {
+                let mut by_context: HashMap<(u32, u32, u32, u32), Vec<UseMeta>> = HashMap::new();
+                for use_meta in &use_metas {
+                    if let Some(ctx) = access_context_key(&tree, use_meta.range) {
+                        by_context.entry(ctx).or_default().push(use_meta.clone());
+                    }
+                }
+                for items in by_context.values_mut() {
+                    items.sort_by_key(|u| (u.range.start.line, u.range.start.character));
+                    let first_write_idx = items.iter().position(|u| u.reassign);
+                    if let Some(write_idx) = first_write_idx {
+                        if items.iter().any(|u| !u.reassign) {
+                            for item in items.iter().take(write_idx) {
+                                if !item.reassign {
+                                    let key = format!(
+                                        "{}:{}:{}:{}",
+                                        item.range.start.line,
+                                        item.range.start.character,
+                                        item.range.end.line,
+                                        item.range.end.character
                                     );
-                                }
-                                crate::types::RaceSeverity::Medium => {
-                                    decoration_kind = DecorationType::Race;
-                                    hover_text = format!(
-                                        "Use of `{}` in goroutine - potential data race ({})",
-                                        var_info.name, race_access
-                                    );
-                                }
-                                crate::types::RaceSeverity::Low => {
-                                    decoration_kind = DecorationType::RaceLow;
-                                    hover_text = format!(
-                                        "Use of `{}` in goroutine - LOW PRIORITY (sync detected, {})",
-                                        var_info.name, race_access
-                                    );
+                                    read_before_write_keys.insert(key);
                                 }
                             }
-                            var_info.potential_race = true;
                         }
                     }
-                    let decoration_label_text = decoration_label(&decoration_kind).to_string();
-                    let decoration_color = decoration_color_key(&decoration_kind).to_string();
-                    decorations.push(Decoration {
-                        range: *use_range,
-                        kind: decoration_kind,
-                        hover_text,
-                    });
-                    if dump_json {
-                        lifecycle_points.push(LifecyclePoint {
-                            name: format!("{}_use_{}", var_info.name, lifecycle_points.len()),
-                            file: uri.to_string(),
-                            pos: LifecyclePos {
-                                line: use_range.start.line,
-                                col: use_range.start.character,
-                            },
-                            expected: LifecycleExpected {
-                                var: var_info.name.clone(),
-                                kind: "use".to_string(),
-                                pointer: var_info.is_pointer,
-                                reassign: is_reassignment,
-                                captured: is_captured,
-                                decoration: decoration_label_text,
-                                color_key: decoration_color,
-                            },
-                        });
+                }
+            }
+            let field_write_only =
+                is_field_symbol && use_metas.len() >= 2 && use_metas.iter().all(|u| u.reassign);
+            let has_read_before_write = !read_before_write_keys.is_empty();
+            let is_struct_value_candidate = !is_field_symbol && !var_info.is_pointer;
+            let mut emitted_mixed_atomic = false;
+            let mut emitted_lock_coverage = false;
+            let mut emitted_heavy_under_lock = false;
+            let mut emitted_retention = false;
+            let mut emitted_large_copy = false;
+            let mut emitted_read_before_write = false;
+            let mut emitted_write_only = false;
+            for use_meta in use_metas {
+                let use_range = use_meta.range;
+                let is_reassignment = use_meta.reassign;
+                let is_captured = use_meta.captured;
+                let key = format!(
+                    "{}:{}:{}:{}",
+                    use_range.start.line,
+                    use_range.start.character,
+                    use_range.end.line,
+                    use_range.end.character
+                );
+                let in_atomic = atomic_map.get(&key).copied().unwrap_or(false);
+                let in_sync = sync_map.get(&key).copied().unwrap_or(false);
+                let heavy_under_lock = heavy_map.get(&key).copied().unwrap_or(false);
+                let mut decoration_kind = if var_info.is_pointer {
+                    DecorationType::Pointer
+                } else {
+                    DecorationType::Use
+                };
+                let mut hover_text = format!("Use of `{}`", var_info.name);
+                let mut diagnostic: Option<DecorationDiagnostic> = None;
+                if is_reassignment {
+                    decoration_kind = DecorationType::AliasReassigned;
+                    hover_text = format!("Reassignment of `{}`", var_info.name);
+                } else if is_captured {
+                    decoration_kind = DecorationType::AliasCaptured;
+                    hover_text = format!("Captured `{}` in closure/goroutine", var_info.name);
+                }
+                let is_in_goroutine_result: bool =
+                    std::panic::catch_unwind(|| is_in_goroutine(&tree, use_range))
+                        .unwrap_or_default();
+
+                if !is_captured && is_in_goroutine_result && (is_decl_global || is_field_symbol) {
+                    let race_access = if is_reassignment {
+                        "write access"
+                    } else {
+                        "read access"
+                    };
+                    let race_severity = match std::panic::catch_unwind(|| {
+                        determine_race_severity(
+                            &tree,
+                            use_range,
+                            &code,
+                            is_reassignment,
+                            &sync_funcs,
+                        )
+                    }) {
+                        Ok(severity) => severity,
+                        Err(_) => RaceSeverity::Medium,
+                    };
+                    var_info.race_severity = race_severity.clone();
+                    match race_severity {
+                        crate::types::RaceSeverity::High => {
+                            decoration_kind = DecorationType::Race;
+                            hover_text = format!(
+                                "Use of `{}` in goroutine - HIGH PRIORITY data race ({})",
+                                var_info.name, race_access
+                            );
+                            diagnostic = Some(make_diagnostic(
+                                DecorationDiagnosticSeverity::Warning,
+                                "field-race-high",
+                                format!(
+                                    "Potential data race on `{}` in goroutine ({})",
+                                    var_info.name, race_access
+                                ),
+                            ));
+                        }
+                        crate::types::RaceSeverity::Medium => {
+                            decoration_kind = DecorationType::Race;
+                            hover_text = format!(
+                                "Use of `{}` in goroutine - potential data race ({})",
+                                var_info.name, race_access
+                            );
+                        }
+                        crate::types::RaceSeverity::Low => {
+                            decoration_kind = DecorationType::RaceLow;
+                            hover_text = format!(
+                                "Use of `{}` in goroutine - LOW PRIORITY (sync detected, {})",
+                                var_info.name, race_access
+                            );
+                        }
                     }
+                    var_info.potential_race = true;
+                }
+                if is_field_symbol {
+                    if has_mixed_atomic {
+                        hover_text = format!(
+                            "{} | mixed atomic/non-atomic access detected for field `{}`",
+                            hover_text, var_info.name
+                        );
+                        if !in_atomic && !emitted_mixed_atomic && diagnostic.is_none() {
+                            diagnostic = Some(make_diagnostic(
+                                DecorationDiagnosticSeverity::Warning,
+                                "field-mixed-atomic",
+                                format!(
+                                    "Field `{}` is accessed both atomically and non-atomically",
+                                    var_info.name
+                                ),
+                            ));
+                            emitted_mixed_atomic = true;
+                        }
+                    }
+                    if has_lock_coverage_violation
+                        && !in_sync
+                        && !emitted_lock_coverage
+                        && diagnostic.is_none()
+                    {
+                        hover_text = format!(
+                            "{} | lock coverage violation for field `{}`",
+                            hover_text, var_info.name
+                        );
+                        diagnostic = Some(make_diagnostic(
+                            DecorationDiagnosticSeverity::Warning,
+                            "field-lock-coverage",
+                            format!(
+                                "Field `{}` has mixed synchronized/unsynchronized access",
+                                var_info.name
+                            ),
+                        ));
+                        emitted_lock_coverage = true;
+                    }
+                    if heavy_under_lock && !emitted_heavy_under_lock && diagnostic.is_none() {
+                        hover_text = format!(
+                            "{} | heavy call under lock while touching `{}`",
+                            hover_text, var_info.name
+                        );
+                        diagnostic = Some(make_diagnostic(
+                            DecorationDiagnosticSeverity::Information,
+                            "field-heavy-under-lock",
+                            format!(
+                                "Heavy operation under lock for field `{}` may hurt throughput",
+                                var_info.name
+                            ),
+                        ));
+                        emitted_heavy_under_lock = true;
+                    }
+                    if is_in_goroutine_result && !in_sync {
+                        hover_text = format!(
+                            "{} | captured field access in goroutine without active lock",
+                            hover_text
+                        );
+                    }
+                    if !emitted_retention {
+                        if let Some(retention_msg) =
+                            detect_retention_pattern(&tree, use_range, field_type_kind)
+                        {
+                            hover_text = format!("{} | {}", hover_text, retention_msg);
+                            if diagnostic.is_none() {
+                                diagnostic = Some(make_diagnostic(
+                                    DecorationDiagnosticSeverity::Information,
+                                    "field-retention",
+                                    format!("{}: `{}`", retention_msg, var_info.name),
+                                ));
+                                emitted_retention = true;
+                            }
+                        }
+                    }
+                    if field_write_only {
+                        hover_text = format!(
+                            "{} | field appears write-only in current file scope",
+                            hover_text
+                        );
+                        if !emitted_write_only && diagnostic.is_none() {
+                            diagnostic = Some(make_diagnostic(
+                                DecorationDiagnosticSeverity::Information,
+                                "field-write-only",
+                                format!("Field `{}` appears write-only", var_info.name),
+                            ));
+                            emitted_write_only = true;
+                        }
+                    } else if has_read_before_write
+                        && read_before_write_keys.contains(&key)
+                        && !is_reassignment
+                    {
+                        hover_text = format!(
+                            "{} | read-before-write pattern detected in current file scope",
+                            hover_text
+                        );
+                        if !emitted_read_before_write && diagnostic.is_none() {
+                            diagnostic = Some(make_diagnostic(
+                                DecorationDiagnosticSeverity::Warning,
+                                "field-read-before-write",
+                                format!(
+                                    "Field `{}` is read before first write in this execution context",
+                                    var_info.name
+                                ),
+                            ));
+                            emitted_read_before_write = true;
+                        }
+                    }
+                }
+                if is_struct_value_candidate
+                    && !is_reassignment
+                    && !emitted_large_copy
+                    && std::panic::catch_unwind(|| is_value_copy_context(&tree, use_range, &code))
+                        .unwrap_or_default()
+                {
+                    hover_text = format!("{} | potential large struct copy by value", hover_text);
+                    if diagnostic.is_none() {
+                        diagnostic = Some(make_diagnostic(
+                            DecorationDiagnosticSeverity::Information,
+                            "struct-large-copy",
+                            format!(
+                                "Potential large struct copy by value for `{}`",
+                                var_info.name
+                            ),
+                        ));
+                        emitted_large_copy = true;
+                    }
+                }
+                let decoration_label_text = decoration_label(&decoration_kind).to_string();
+                let decoration_color = decoration_color_key(&decoration_kind).to_string();
+                decorations.push(Decoration {
+                    range: use_range,
+                    kind: decoration_kind,
+                    hover_text,
+                    diagnostic,
+                });
+                if dump_json {
+                    lifecycle_points.push(LifecyclePoint {
+                        name: format!("{}_use_{}", var_info.name, lifecycle_points.len()),
+                        file: uri.to_string(),
+                        pos: LifecyclePos {
+                            line: use_range.start.line,
+                            col: use_range.start.character,
+                        },
+                        expected: LifecycleExpected {
+                            var: var_info.name.clone(),
+                            kind: "use".to_string(),
+                            pointer: var_info.is_pointer,
+                            reassign: is_reassignment,
+                            captured: is_captured,
+                            decoration: decoration_label_text,
+                            color_key: decoration_color,
+                        },
+                    });
                 }
             }
             let value = match serde_json::to_value(&decorations) {

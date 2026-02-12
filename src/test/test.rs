@@ -26,9 +26,11 @@ mod tests {
     #![allow(clippy::len_zero)]
 
     use crate::analysis::{
-        count_entities, determine_race_severity, find_node_at_cursor_with_context,
+        access_context_key, count_entities, detect_retention_pattern, determine_race_severity,
+        field_type_kind_at_declaration, find_node_at_cursor_with_context,
         find_variable_at_position, find_variable_at_position_enhanced,
-        has_synchronization_in_block, is_in_goroutine,
+        has_synchronization_in_block, is_access_in_atomic_context, is_heavy_work_in_call_context,
+        is_in_goroutine, is_struct_field_declaration, is_value_copy_context, FieldTypeKind,
     };
     use crate::types::{CursorContextType, RaceSeverity};
     use std::collections::HashSet;
@@ -87,6 +89,44 @@ func main() {
         assert_eq!(var_info_obj.name, "user");
         assert!(var_info_obj.declaration.start.line <= 7);
         assert!(var_info_obj.uses.len() >= 2);
+    }
+
+    #[test]
+    fn test_ignore_package_function_symbol_in_call() {
+        let code = r#"
+func main() {
+    var n int64
+    atomic.AddInt64(&n, 1)
+}
+        "#;
+        let tree = match parse_go(code) {
+            Ok(tree) => tree,
+            Err(_) => return,
+        };
+
+        // Cursor on AddInt64
+        let pos = Position::new(3, 13);
+        let var_info = find_variable_at_position(&tree, code, pos);
+        assert!(var_info.is_none());
+    }
+
+    #[test]
+    fn test_ignore_method_symbol_in_call() {
+        let code = r#"
+type S struct { x int }
+func (s *S) f() {
+    s.f()
+}
+        "#;
+        let tree = match parse_go(code) {
+            Ok(tree) => tree,
+            Err(_) => return,
+        };
+
+        // Cursor on method symbol f() in call context.
+        let pos = Position::new(3, 6);
+        let var_info = find_variable_at_position(&tree, code, pos);
+        assert!(var_info.is_none());
     }
 
     #[test]
@@ -263,12 +303,65 @@ func unsafe() {
 
         let range_safe = Range::new(Position::new(4, 4), Position::new(4, 4));
         let sync_funcs: HashSet<String> = HashSet::new();
-        let severity_safe = determine_race_severity(&tree_safe, range_safe, safe_code, &sync_funcs);
+        let severity_safe =
+            determine_race_severity(&tree_safe, range_safe, safe_code, true, &sync_funcs);
         assert_eq!(severity_safe, RaceSeverity::Low);
         let range_unsafe = Range::new(Position::new(4, 8), Position::new(4, 8));
         let severity_unsafe =
-            determine_race_severity(&tree_unsafe, range_unsafe, unsafe_code, &sync_funcs);
+            determine_race_severity(&tree_unsafe, range_unsafe, unsafe_code, true, &sync_funcs);
         assert_eq!(severity_unsafe, RaceSeverity::High);
+    }
+
+    #[test]
+    fn test_race_severity_sync_must_cover_access() {
+        let code = r#"
+func demo() {
+    go func() {
+        mu.Lock()
+        _ = shared
+        mu.Unlock()
+        _ = shared
+    }()
+}
+        "#;
+        let tree = match parse_go(code) {
+            Ok(tree) => tree,
+            Err(_) => return,
+        };
+        let sync_funcs: HashSet<String> = HashSet::new();
+        let inside_lock = Range::new(Position::new(4, 12), Position::new(4, 12));
+        let outside_lock = Range::new(Position::new(6, 12), Position::new(6, 12));
+        assert_eq!(
+            determine_race_severity(&tree, inside_lock, code, false, &sync_funcs),
+            RaceSeverity::Low
+        );
+        assert_eq!(
+            determine_race_severity(&tree, outside_lock, code, false, &sync_funcs),
+            RaceSeverity::High
+        );
+    }
+
+    #[test]
+    fn test_race_severity_defer_unlock_keeps_lock_active() {
+        let code = r#"
+func demo() {
+    go func() {
+        mu.Lock()
+        defer mu.Unlock()
+        _ = shared
+    }()
+}
+        "#;
+        let tree = match parse_go(code) {
+            Ok(tree) => tree,
+            Err(_) => return,
+        };
+        let sync_funcs: HashSet<String> = HashSet::new();
+        let range = Range::new(Position::new(5, 12), Position::new(5, 12));
+        assert_eq!(
+            determine_race_severity(&tree, range, code, false, &sync_funcs),
+            RaceSeverity::Low
+        );
     }
 
     #[test]
@@ -404,6 +497,113 @@ func inc() {
     }
 
     #[test]
+    fn test_is_access_in_atomic_context_for_field() {
+        let code = r#"
+func demo() {
+    atomic.StoreInt64(&stats.total, 1)
+}
+        "#;
+        let tree = match parse_go(code) {
+            Ok(tree) => tree,
+            Err(_) => return,
+        };
+        let range = Range::new(Position::new(2, 29), Position::new(2, 29)); // total
+        assert!(is_access_in_atomic_context(&tree, range, code));
+    }
+
+    #[test]
+    fn test_is_struct_field_declaration_true() {
+        let code = r#"
+type Stats struct {
+    total int64
+}
+        "#;
+        let tree = match parse_go(code) {
+            Ok(tree) => tree,
+            Err(_) => return,
+        };
+        let range = Range::new(Position::new(2, 4), Position::new(2, 4)); // total
+        assert!(is_struct_field_declaration(&tree, range));
+    }
+
+    #[test]
+    fn test_is_heavy_work_in_call_context() {
+        let code = r#"
+func demo() {
+    fmt.Println(stats.total)
+}
+        "#;
+        let tree = match parse_go(code) {
+            Ok(tree) => tree,
+            Err(_) => return,
+        };
+        let range = Range::new(Position::new(2, 22), Position::new(2, 22)); // total
+        assert!(is_heavy_work_in_call_context(&tree, range, code));
+    }
+
+    #[test]
+    fn test_field_type_kind_and_retention_slice() {
+        let code = r#"
+type S struct {
+    buf []byte
+}
+
+func f(big []byte, s *S) {
+    s.buf = big[:4]
+}
+        "#;
+        let tree = match parse_go(code) {
+            Ok(tree) => tree,
+            Err(_) => return,
+        };
+        let decl = Range::new(Position::new(2, 4), Position::new(2, 4)); // buf decl
+        let use_range = Range::new(Position::new(6, 6), Position::new(6, 6)); // buf in s.buf
+        assert_eq!(
+            field_type_kind_at_declaration(&tree, decl, code),
+            FieldTypeKind::Slice
+        );
+        assert!(detect_retention_pattern(&tree, use_range, FieldTypeKind::Slice).is_some());
+    }
+
+    #[test]
+    fn test_is_value_copy_context_true() {
+        let code = r#"
+type Big struct{ A, B, C, D, E int64 }
+
+func consume(v Big) {}
+
+func main() {
+    var x Big
+    consume(x)
+}
+        "#;
+        let tree = match parse_go(code) {
+            Ok(tree) => tree,
+            Err(_) => return,
+        };
+        let range = Range::new(Position::new(7, 12), Position::new(7, 12)); // x in consume(x)
+        assert!(is_value_copy_context(&tree, range, code));
+    }
+
+    #[test]
+    fn test_access_context_key_for_func_literal() {
+        let code = r#"
+func main() {
+    x := 1
+    go func() {
+        _ = x
+    }()
+}
+        "#;
+        let tree = match parse_go(code) {
+            Ok(tree) => tree,
+            Err(_) => return,
+        };
+        let range = Range::new(Position::new(4, 12), Position::new(4, 12)); // x inside func literal
+        assert!(access_context_key(&tree, range).is_some());
+    }
+
+    #[test]
     fn test_determine_race_severity_original() {
         let safe_code = r#"
 func safe() {
@@ -434,6 +634,7 @@ func unsafe() {
                 &tree_safe,
                 range_safe,
                 safe_code,
+                true,
                 &sync_funcs
             ),
             crate::types::RaceSeverity::Low
@@ -443,6 +644,7 @@ func unsafe() {
                 &tree_unsafe,
                 range_unsafe,
                 unsafe_code,
+                true,
                 &sync_funcs
             ),
             crate::types::RaceSeverity::High
@@ -578,13 +780,11 @@ func main() {
             Ok(tree) => tree,
             Err(_) => return,
         };
-
         let pos_person = Position::new(9, 12);
         let var_info = match find_variable_at_position(&tree, code, pos_person) {
             Some(info) => info,
             None => return,
         };
-
         assert_eq!(var_info.name, "person");
         assert!(var_info.declaration.start.line <= 2);
     }
@@ -604,13 +804,11 @@ func (c *Counter) Increment() {
             Ok(tree) => tree,
             Err(_) => return,
         };
-
         let pos_ptr_receiver = Position::new(5, 6);
         let var_info = match find_variable_at_position(&tree, code, pos_ptr_receiver) {
             Some(info) => info,
             None => return,
         };
-
         assert_eq!(var_info.name, "c");
         assert!(var_info.declaration.start.line <= 5);
     }
@@ -631,13 +829,11 @@ func process(w Writer) {
             Ok(tree) => tree,
             Err(_) => return,
         };
-
         let pos_interface = Position::new(5, 13);
         let var_info = match find_variable_at_position(&tree, code, pos_interface) {
             Some(info) => info,
             None => return,
         };
-
         assert_eq!(var_info.name, "w");
         assert!(var_info.declaration.start.line <= 5);
         assert!(var_info.uses.len() >= 1);
@@ -659,7 +855,6 @@ func main() {
             Ok(tree) => tree,
             Err(_) => return,
         };
-
         let range_nested = Range::new(Position::new(5, 20), Position::new(5, 20));
         assert!(is_in_goroutine(&tree, range_nested));
     }
@@ -679,13 +874,11 @@ func outer() {
             Ok(tree) => tree,
             Err(_) => return,
         };
-
         let pos_x = Position::new(4, 13);
         let var_info = match find_variable_at_position(&tree, code, pos_x) {
             Some(info) => info,
             None => return,
         };
-
         assert_eq!(var_info.name, "x");
         assert!(var_info.declaration.start.line <= 2);
     }
@@ -707,16 +900,13 @@ func getValues() (int, int) {
             Ok(tree) => tree,
             Err(_) => return,
         };
-
         let pos_a = Position::new(2, 4);
         let var_info_a = match find_variable_at_position(&tree, code, pos_a) {
             Some(info) => info,
             None => return,
         };
-
         assert_eq!(var_info_a.name, "a");
         assert!(var_info_a.declaration.start.line <= 2);
-
         let pos_c = Position::new(3, 4);
         let var_info_c = match find_variable_at_position(&tree, code, pos_c) {
             Some(info) => info,

@@ -41,6 +41,23 @@ pub struct Decoration {
     pub range: Range,
     pub kind: DecorationType,
     pub hover_text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub diagnostic: Option<DecorationDiagnostic>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct DecorationDiagnostic {
+    pub severity: DecorationDiagnosticSeverity,
+    pub code: String,
+    pub message: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub enum DecorationDiagnosticSeverity {
+    Error,
+    Warning,
+    Information,
+    Hint,
 }
 
 pub struct EntityCount {

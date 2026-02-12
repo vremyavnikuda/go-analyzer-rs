@@ -139,6 +139,11 @@ interface Decoration {
     | "AliasReassigned"
     | "AliasCaptured";
     hover_text: string;
+    diagnostic?: {
+        severity: "Error" | "Warning" | "Information" | "Hint";
+        code: string;
+        message: string;
+    };
 }
 
 const ProgressNotification = new NotificationType<string>(
@@ -185,6 +190,49 @@ function addColorValues(points: unknown[]): unknown[] {
     });
 }
 
+function toDiagnosticSeverity(
+    severity: "Error" | "Warning" | "Information" | "Hint",
+): vscode.DiagnosticSeverity {
+    switch (severity) {
+        case "Error":
+            return vscode.DiagnosticSeverity.Error;
+        case "Warning":
+            return vscode.DiagnosticSeverity.Warning;
+        case "Information":
+            return vscode.DiagnosticSeverity.Information;
+        case "Hint":
+            return vscode.DiagnosticSeverity.Hint;
+    }
+}
+
+function applyDiagnostics(
+    diagnosticsCollection: vscode.DiagnosticCollection,
+    uri: vscode.Uri,
+    resp: Decoration[] | undefined,
+) {
+    if (!Array.isArray(resp)) {
+        diagnosticsCollection.delete(uri);
+        return;
+    }
+    const diagnostics: vscode.Diagnostic[] = [];
+    for (const d of resp) {
+        if (!d.diagnostic) continue;
+        const range = new vscode.Range(
+            new vscode.Position(d.range.start.line, d.range.start.character),
+            new vscode.Position(d.range.end.line, d.range.end.character),
+        );
+        const diag = new vscode.Diagnostic(
+            range,
+            d.diagnostic.message,
+            toDiagnosticSeverity(d.diagnostic.severity),
+        );
+        diag.code = d.diagnostic.code;
+        diag.source = "go-analyzer";
+        diagnostics.push(diag);
+    }
+    diagnosticsCollection.set(uri, diagnostics);
+}
+
 async function dumpAstForDocument(uri: vscode.Uri) {
     if (!client) return;
     const maxChars = vscode.workspace.getConfiguration("goAnalyzer")
@@ -218,7 +266,9 @@ async function dumpAstForDocument(uri: vscode.Uri) {
 export function activate(context: vscode.ExtensionContext) {
     cleanupEventHandlers();
     output = vscode.window.createOutputChannel("Go Analyzer");
+    const diagnosticsCollection = vscode.languages.createDiagnosticCollection("go-analyzer");
     context.subscriptions.push(output);
+    context.subscriptions.push(diagnosticsCollection);
     const serverModule = resolveServerPath(context);
     log(`Launching Go-Analyzer server: ${serverModule}`);
     const semanticEnable = vscode.workspace.getConfiguration("goAnalyzer")
@@ -421,6 +471,7 @@ export function activate(context: vscode.ExtensionContext) {
                                 editor.setDecorations(decorationTypes[k as keyof typeof decorationTypes], decos);
                             }
                         }
+                        applyDiagnostics(diagnosticsCollection, document.uri, resp);
                         progress.report({ message: "Analysis complete" });
                     },
                 );
@@ -517,6 +568,7 @@ export function activate(context: vscode.ExtensionContext) {
                 for (const key in decorationTypes) {
                     editor.setDecorations(decorationTypes[key as keyof typeof decorationTypes], []);
                 }
+                diagnosticsCollection.delete(editor.document.uri);
             }
             cursorDisp?.dispose();
             clearTimeout(timeoutHandle as NodeJS.Timeout);
@@ -601,6 +653,7 @@ export function activate(context: vscode.ExtensionContext) {
                             editor.setDecorations(decorationTypes[k as keyof typeof decorationTypes], decos);
                         }
                     }
+                    applyDiagnostics(diagnosticsCollection, editor.document.uri, resp);
                 } catch (err) {
                     console.error("Auto-analysis error:", err);
                 }

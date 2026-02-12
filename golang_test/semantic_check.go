@@ -11,20 +11,17 @@ func semanticCheck() {
 		_ = a
 	}
 	_ = a
-
 	// Reassignments
 	x := 1
 	x = 2
 	x += 3
 	x++
 	_ = x
-
 	// Mixed := (частичное переобъявление)
 	y := 10
 	y, z := y+1, 5
 	_ = y
 	_ = z
-
 	// Range reassign
 	arr := []int{1, 2, 3}
 	for i := range arr {
@@ -35,7 +32,6 @@ func semanticCheck() {
 	for i2 = range arr {
 		_ = i2
 	}
-
 	// Capture in closure
 	outer := 100
 	f := func() int {
@@ -43,7 +39,6 @@ func semanticCheck() {
 		return outer
 	}
 	_ = f()
-
 	// Capture in goroutine
 	done := make(chan struct{})
 	go func() {
@@ -51,13 +46,11 @@ func semanticCheck() {
 		close(done)
 	}()
 	<-done
-
 	// Non-capture
 	func() {
 		inner := 1
 		_ = inner
 	}()
-
 	// Pointer and reference types
 	p := &outer
 	s := []int{1, 2}
@@ -71,12 +64,10 @@ func semanticCheck() {
 	_ = <-ch
 	_ = fn(1)
 	_ = iface
-
 	// Simple sync usage (for race-detection heuristics)
 	var mu sync.Mutex
 	mu.Lock()
 	mu.Unlock()
-
 	// Type switch (scope + shadowing)
 	var any interface{} = m
 	switch v := any.(type) {
